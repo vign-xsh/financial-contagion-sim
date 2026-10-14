@@ -16,7 +16,7 @@ describing its future responsibility, and the CLI offers `--help` and
 
 ```
 pyproject.toml              metadata, dependencies, tool configuration
-requirements.txt            -e .[dev]
+requirements.txt            spec §4 package list (pyproject.toml is authoritative)
 main.py                     thin wrapper around financial_contagion_sim.cli
 src/financial_contagion_sim/
     __init__.py             __version__
@@ -43,7 +43,7 @@ Windows (PowerShell):
 py -3 -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -e ".[dev]"
 ```
 
 macOS / Linux:
@@ -52,12 +52,13 @@ macOS / Linux:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -e ".[dev]"
 ```
 
-`pyproject.toml` is the single source of truth for dependencies;
-`requirements.txt` only installs the package in editable mode with the `dev`
-extra.
+`pyproject.toml` is the single source of truth for dependencies.
+`requirements.txt` lists the six packages named in the spec (§4) for reference;
+installing from it does not install this package. A smoke test fails if it
+names a package that `pyproject.toml` does not declare.
 
 ## Checks
 

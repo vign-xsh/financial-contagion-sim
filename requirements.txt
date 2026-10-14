@@ -1,1 +1,8 @@
--e .[dev]
+# Packages listed in spec §4. pyproject.toml is authoritative; for development
+# install the package itself with: pip install -e ".[dev]"
+networkx>=3.2
+numpy>=1.26
+scipy>=1.11
+matplotlib>=3.8
+plotly>=5.18
+pytest>=8.0

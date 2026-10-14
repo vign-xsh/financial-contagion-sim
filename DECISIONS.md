@@ -19,6 +19,7 @@
 | 2026-10-14 | Extra files not in spec §4: `DECISIONS.md`, `tests/test_smoke.py`, `docs/spec/`, and `src/financial_contagion_sim/cli.py` (see the 2026-10-11 entry). | Decision log, Phase 0 smoke checks, a versioned copy of the spec, and the installable CLI entry point. |
 | 2026-10-14 | Extra dev tools not in the spec: ruff, mypy, build. | Linting, formatting, static typing and packaging checks. |
 | 2026-10-14 | Naming: the spec uses ρ for correlation (`ρ_ij`) and for infection density (`ρ_∞`, `ρ_0`). Code uses `corr` for correlations and `infected_fraction` / `initial_infected_fraction` for densities. | Avoids one symbol meaning two things in code. |
+| 2026-10-14 | Supersedes the 2026-10-11 `requirements.txt` entry: it now lists the six spec §4 packages with lower bounds matching `pyproject.toml`, which stays authoritative; development installs use `pip install -e ".[dev]"`. A smoke test guards against drift. | Spec §4 alignment. |
 
 ## Open
 
