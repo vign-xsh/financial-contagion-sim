@@ -16,7 +16,9 @@ import pytest
 from financial_contagion_sim.energy_calculator import (
     adjacency_matrix,
     exact_structural_energy,
+    spreading_energy,
     structural_energy,
+    total_energy,
 )
 from financial_contagion_sim.graph_builder import (
     generate_barabasi_albert,
@@ -172,3 +174,123 @@ def test_engines_do_not_mutate_graph() -> None:
     structural_energy(g)
     adjacency_matrix(g)
     assert sorted(g.edges(data="sign")) == before
+
+
+# --- spreading energy -----------------------------------------------------------
+
+CODES = {"S": 1, "A": 0, "I": -1}
+
+
+def _st(code: str) -> np.ndarray:
+    return np.array([CODES[c] for c in code], dtype=np.int8)
+
+
+# Spec §3.2 table, written out pair by pair: (state_u, state_v, sign) -> E_ij^p.
+SPEC_PAIR_TABLE = {
+    ("S", "I", 1): 1,
+    ("I", "S", 1): 1,
+    ("A", "I", 1): 1,
+    ("I", "A", 1): 1,
+    ("S", "I", -1): -1,
+    ("I", "S", -1): -1,
+    ("A", "I", -1): -1,
+    ("I", "A", -1): -1,
+    ("S", "S", 1): 0,
+    ("S", "S", -1): 0,
+    ("I", "I", 1): 0,
+    ("I", "I", -1): 0,
+    ("A", "A", 1): 0,
+    ("A", "A", -1): 0,
+    ("S", "A", 1): 0,
+    ("S", "A", -1): 0,
+    ("A", "S", 1): 0,
+    ("A", "S", -1): 0,
+}
+
+
+def test_pair_table_covers_every_combination() -> None:
+    combos = {(a, b, s) for a in "SAI" for b in "SAI" for s in (1, -1)}
+    assert set(SPEC_PAIR_TABLE) == combos
+
+
+@pytest.mark.parametrize(("pair", "expected"), sorted(SPEC_PAIR_TABLE.items()))
+def test_spreading_pair_table(pair: tuple[str, str, int], expected: int) -> None:
+    a, b, sign = pair
+    # n = 2, so C(2, 2) = 1 and E_p equals the single pair term.
+    assert spreading_energy(_graph(2, [(0, 1, sign)]), _st(a + b)) == expected
+
+
+def test_non_edge_contributes_nothing() -> None:
+    assert spreading_energy(_graph(2, []), _st("SI")) == 0.0
+    assert spreading_energy(_graph(3, [(0, 1, 1)]), _st("SSI")) == 0.0
+
+
+def test_spreading_hand_computed_four_nodes() -> None:
+    g = _graph(4, [(0, 1, 1), (1, 2, -1), (2, 3, 1), (0, 3, 1), (0, 2, 1)])
+    # States S I A I: 01 S+I=+1, 12 I-A=-1, 23 A+I=+1, 03 S+I=+1, 02 S+A=0.
+    assert spreading_energy(g, _st("SIAI")) == 2 / 6
+
+
+def test_spreading_single_node_is_zero() -> None:
+    assert spreading_energy(_graph(1, []), _st("I")) == 0.0
+
+
+def test_spreading_extremes_on_complete_graph() -> None:
+    # Star of one I node to n-1 S nodes on a complete graph: n-1 active pairs.
+    n = 6
+    assert spreading_energy(_complete(n, 1), _st("I" + "S" * 5)) == 5 / 15
+    assert spreading_energy(_complete(n, -1), _st("IIISSS")) == -9 / 15
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_spreading_bounded_on_random_graphs(seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(2, 30))
+    g = _random_signed(seed, n, float(rng.uniform()), float(rng.uniform()))
+    states = rng.choice(np.array([1, 0, -1], dtype=np.int8), size=n)
+    assert -1.0 <= spreading_energy(g, states) <= 1.0
+
+
+def test_spreading_validates_states() -> None:
+    g = _graph(2, [(0, 1, 1)])
+    with pytest.raises(TypeError, match="dtype int8"):
+        spreading_energy(g, np.array([1, -1]))
+    with pytest.raises(ValueError, match="shape"):
+        spreading_energy(g, _st("SIS"))
+    with pytest.raises(ValueError, match="found"):
+        spreading_energy(g, np.array([1, 5], dtype=np.int8))
+
+
+# --- total energy ------------------------------------------------------------------
+
+
+def test_total_energy_endpoints_and_mix() -> None:
+    g = _random_signed(4, 25, 0.4, 0.5)
+    states = np.random.default_rng(4).choice(np.array([1, 0, -1], dtype=np.int8), 25)
+    e_delta, e_p = structural_energy(g), spreading_energy(g, states)
+    assert total_energy(g, states, 1.0) == e_delta
+    assert total_energy(g, states, 0.0) == e_p
+    assert total_energy(g, states, 0.3) == pytest.approx(0.3 * e_delta + 0.7 * e_p)
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_total_energy_bounded(seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    g = _random_signed(seed, 15, float(rng.uniform()), float(rng.uniform()))
+    states = rng.choice(np.array([1, 0, -1], dtype=np.int8), 15)
+    assert -1.0 <= total_energy(g, states, float(rng.uniform())) <= 1.0
+
+
+@pytest.mark.parametrize(
+    ("alpha", "error"),
+    [
+        (-0.1, ValueError),
+        (1.1, ValueError),
+        (math.nan, ValueError),
+        ("0.5", TypeError),
+        (True, TypeError),
+    ],
+)
+def test_total_energy_rejects_bad_alpha(alpha: object, error: type) -> None:
+    with pytest.raises(error):
+        total_energy(_graph(2, [(0, 1, 1)]), _st("SI"), alpha)
