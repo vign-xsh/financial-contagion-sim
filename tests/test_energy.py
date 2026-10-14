@@ -1,7 +1,7 @@
-"""Tests for structural-balance energy (``energy_calculator``).
+"""Validate fast local energy differences against exact matrix recomputation.
 
-Placeholder: the energy calculation is not implemented, so nothing is
-verified here yet. Real tests arrive with the Phase 1+ implementation.
+Spec §4, for ``energy_calculator``. Skipped: nothing is implemented yet, so
+nothing is verified here until Phase 1+.
 """
 
 import pytest

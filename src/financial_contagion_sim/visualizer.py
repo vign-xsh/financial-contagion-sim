@@ -1,7 +1,6 @@
-"""Visualization of networks and simulation results.
+"""Visualization of simulation results (spec §4; outputs in §5, step 3).
 
-Responsibility: render signed networks, contagion trajectories and energy
-time series as static (matplotlib) and interactive (plotly) figures.
+Responsibility: 2D state-trajectory plots and 3D Plotly surface generators.
 
 Not implemented (Phase 1+).
 """

@@ -1,7 +1,7 @@
-"""SAIS contagion dynamics.
+"""SAIS contagion dynamics (spec §4; governing rates in §3.1).
 
-Responsibility: evolve node states under the SAIS (susceptible, alert,
-infected, susceptible) contagion model on a signed financial network.
+Responsibility: CTMC transition rates and Gillespie state-jump logic for the
+SAIS (Susceptible, Alert, Infected) process on a signed financial network.
 
 Not implemented (Phase 1+).
 """
