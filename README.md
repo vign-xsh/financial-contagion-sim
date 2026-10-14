@@ -6,13 +6,14 @@ co-evolutionary Monte Carlo.
 
 ## Status
 
-**Phase 1 (signed network construction).** The repository, packaging,
-environment and baseline checks are in place, and `graph_builder.py`
-implements the signed network loaders and their validator; its module
-docstring documents the graph contract that later phases rely on. Every other
-module under `src/financial_contagion_sim/` except `cli.py` is still a
-docstring describing its future responsibility, and the CLI offers `--help`
-and `--version` only.
+**Phase 2 (SAIS dynamics and network energy).** `graph_builder.py` (Phase 1)
+builds and validates signed networks. `sais_engine.py` implements the SAIS
+transition rates and Gillespie simulation on a fixed graph, and
+`energy_calculator.py` implements the structural, spreading and total energies
+and their local edge-flip differences. Each module docstring documents its
+conventions. The co-evolutionary loop (`simulator.py`) and plotting
+(`visualizer.py`) are still docstrings only, and the CLI offers `--help` and
+`--version` only.
 
 | Feature (spec section) | Module | Status |
 |---|---|---|
@@ -20,11 +21,12 @@ and `--version` only.
 | Signed graphs from stock-return correlation matrices (§5) | `graph_builder` | Implemented (Phase 1): one matrix per call |
 | Signed-graph validation | `graph_builder` | Implemented (Phase 1) |
 | Correlation sequences or rolling windows; MST / k-NN filtering | `graph_builder` | Not implemented (out of scope; see DECISIONS.md) |
-| CTMC SAIS transition rates (§3.1) | `sais_engine` | Not implemented |
-| Gillespie state-jump logic (§4) | `sais_engine` | Not implemented |
-| Exact O(n^3) triad energy E_Δ (§3.2) | `energy_calculator` | Not implemented |
-| Pairwise spreading energy E_p and total energy E(G_t) (§3.2) | `energy_calculator` | Not implemented |
-| Fast local energy difference for an edge-sign flip (§3.3) | `energy_calculator` | Not implemented |
+| CTMC SAIS transition rates (§3.1) | `sais_engine` | Implemented (Phase 2) |
+| Gillespie state-jump logic (§4) | `sais_engine` | Implemented (Phase 2): direct method on a fixed graph |
+| Exact O(n^3) triad energy E_Δ (§3.2) | `energy_calculator` | Implemented (Phase 2), plus a sparse engine |
+| Pairwise spreading energy E_p and total energy E(G_t) (§3.2) | `energy_calculator` | Implemented (Phase 2): E_p normalized by C(n,2) |
+| Local energy difference for an edge-sign flip (§3.3) | `energy_calculator` | Implemented (Phase 2): O(min degree), not O(1) |
+| Flip acceptance rule (§3.3) | `energy_calculator` | Implemented (Phase 2): not yet used by any loop |
 | Co-evolutionary Monte Carlo loop tracking S(t), A(t), I(t), r(t), E(G_t) (§5) | `simulator` | Not implemented |
 | 2D state-trajectory plots (§5) | `visualizer` | Not implemented |
 | 3D Plotly surface plots exported as `.html` (§5) | `visualizer` | Not implemented |
@@ -99,15 +101,15 @@ src/financial_contagion_sim/
     __init__.py             __version__
     cli.py                  argparse stub (--help, --version)
     graph_builder.py        signed financial network construction
-    sais_engine.py          SAIS contagion dynamics
-    energy_calculator.py    structural-balance energy
+    sais_engine.py          SAIS rates and Gillespie simulation
+    energy_calculator.py    structural, spreading and total energy; flip deltas
     simulator.py            co-evolutionary Monte Carlo orchestration
     visualizer.py           matplotlib / plotly figures
 tests/
     test_smoke.py           import, version, CLI --help
     test_graph_builder.py   signed network loaders and validation
-    test_energy.py          skipped until Phase 1
-    test_sais.py            skipped until Phase 1
+    test_energy.py          energies, local deltas vs exact recomputation
+    test_sais.py            SAIS rates, conservation, Gillespie statistics
 DECISIONS.md                decision log
 docs/spec/specification.pdf project specification
 ```
