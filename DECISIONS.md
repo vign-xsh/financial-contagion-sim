@@ -20,6 +20,33 @@
 | 2026-10-14 | Extra dev tools not in the spec: ruff, mypy, build. | Linting, formatting, static typing and packaging checks. |
 | 2026-10-14 | Naming: the spec uses ρ for correlation (`ρ_ij`) and for infection density (`ρ_∞`, `ρ_0`). Code uses `corr` for correlations and `infected_fraction` / `initial_infected_fraction` for densities. | Avoids one symbol meaning two things in code. |
 | 2026-10-14 | Supersedes the 2026-10-11 `requirements.txt` entry: it now lists the six spec §4 packages with lower bounds matching `pyproject.toml`, which stays authoritative; development installs use `pip install -e ".[dev]"`. A smoke test guards against drift. | Spec §4 alignment. |
+| 2026-10-14 | Phase 1 A1: signed networks are undirected simple `networkx.Graph` objects; `DiGraph` and multigraphs are rejected (`TypeError`). | The triad term A_ij·A_jk·A_ki in spec §3.2 is symmetric. Approved in the Phase 1 decision gate. |
+| 2026-10-14 | Phase 1 A2: self-loops are rejected (`ValueError`). | Approved. |
+| 2026-10-14 | Phase 1 A3: duplicate edges are impossible in a simple `Graph`; multigraphs are rejected. There is no public edge-list input in Phase 1. | Approved. |
+| 2026-10-14 | Phase 1 A4: isolated nodes and disconnected graphs are allowed, without a warning. | Approved. |
+| 2026-10-14 | Phase 1 A5: every edge has `"sign"`, exactly a Python `int` equal to +1 or −1; `bool`, `float`, `str` and NumPy integers are rejected. Signs may be flipped in place. | Approved. Keeps NumPy scalars out when later phases flip signs. |
+| 2026-10-14 | Phase 1 A6: nodes are exactly the Python ints 0..n−1. | Approved. Later phases use them as array indices. |
+| 2026-10-14 | Phase 1 A7: edges carry only `"sign"`; correlation graphs also carry `"distance"` = d_ij as a float. | Approved. |
+| 2026-10-14 | Phase 1 A8: non-edges are absent; the A_ij = 0 convention for non-edges belongs to the energy phase. | Approved. |
+| 2026-10-14 | Phase 1 B1 (resolves the r(t) Open item): r0 = positive edges / m, where m is the total edge count. The simulator's friendly link density r(t) (spec §5) must use the same definition. | Approved; owner's choice over positive / C(n,2). |
+| 2026-10-14 | Phase 1 B2: exactly `round(r0 * m)` edges are positive (Python `round`, round-half-even on the float product). The positive edges are a seeded permutation over edges sorted by (u, v) with u < v, so the signs depend only on the edge set. | Approved. See the Open item on float rounding. |
+| 2026-10-14 | Phase 1 B3: generators return a `Graph` and record `g.graph["r0_requested"]` and `g.graph["r0_realized"]`, rather than returning a tuple. | Approved. |
+| 2026-10-14 | Phase 1 B4: r0 = 0 (all negative) and r0 = 1 (all positive) are valid. | Approved. |
+| 2026-10-14 | Phase 1 B5: a graph with m = 0 is valid; `r0_realized` is `None`. | Approved. |
+| 2026-10-14 | Phase 1 C1: correlation pair i < j is an edge iff abs(corr_ij) ≥ tau; tau is required and lies in [0, 1]. The upper triangle `corr[i, j]` is used, which matters only within the symmetry tolerance. | Approved. The spec gives no edge-selection rule. |
+| 2026-10-14 | Phase 1 C2: edge sign = sign(corr_ij); corr_ij = 0 is never an edge, even at tau = 0. d_ij = sqrt(2(1 − corr_ij)) (spec §5) is stored as `"distance"` and never used for selection. | Approved. d_ij is unsigned, so it cannot select strongly negative correlations. |
+| 2026-10-14 | Phase 1 C4: correlation input must be square, 2-D, at least 1×1, finite, symmetric within atol 1e-8, with a unit diagonal within 1e-8, and entries in [−1, 1]. Values within 1e-8 outside the bounds are clamped before the sqrt; anything further out is rejected. | Approved. |
+| 2026-10-14 | Phase 1 C5: correlation input is a `numpy.ndarray` of integer or floating dtype only; no pandas. | Approved. |
+| 2026-10-14 | Phase 1 C6 (resolves the "dynamic" correlation Open item): one correlation matrix per call. | Approved. |
+| 2026-10-14 | Phase 1 C7: no data downloads or bundled datasets; tests use hand-built matrices only. | Approved. |
+| 2026-10-14 | Phase 1 C8: correlation graphs record `g.graph["r0_realized"]` (`None` with no edges) but no `r0_requested`. | Approved. |
+| 2026-10-14 | Phase 1 D1: public API is `generate_barabasi_albert(n, m, r0, rng)`, `generate_erdos_renyi(n, p, r0, rng)`, `graph_from_correlation(corr, tau)` and `validate_signed_graph(g) -> None`. Every loader validates its own output. | Approved. |
+| 2026-10-14 | Phase 1 D1b: the BA parameter keeps the name `m` (edges per new node), documented as distinct from the total edge count in the r0 definition. | Approved. |
+| 2026-10-14 | Phase 1 D2: `rng` is a `numpy.random.Generator` or a non-negative `int`, normalized with `default_rng`; no global seeding. The networkx generator gets `int(rng.integers(0, 2**31 - 1))`, then the same `rng` draws the sign permutation. ER uses `networkx.gnp_random_graph`. | Approved. networkx 3.7 does accept Generators; the explicit int seed keeps its draws separate from the sign draws. |
+| 2026-10-14 | Phase 1 D3: `TypeError` for wrong types, `ValueError` for out-of-range values; no custom exception hierarchy. | Approved. |
+| 2026-10-14 | Phase 1 D4: n ≥ 1; BA 1 ≤ m < n (so BA needs n ≥ 2); ER p ∈ [0, 1]; r0 ∈ [0, 1]; `bool` is rejected where an int or real is expected; NaN is rejected. | Approved. |
+| 2026-10-14 | Phase 1 E1: `graph_builder` holds no SAIS state, energy or simulation logic, and no node-state attribute. | Approved. |
+| 2026-10-14 | `types-networkx` added to the `[dev]` extra, so mypy strict type-checks networkx calls. | Owner's choice over a `type: ignore` or a mypy override. Dev-only; no runtime dependency. |
 
 ## Open
 
@@ -29,10 +56,13 @@
 | 2026-10-11 | Should CI (GitHub Actions) run the checks on pull requests? | Workflows need explicit approval; not part of Phase 0. |
 | 2026-10-11 | `python` and `pip` are not on PATH on the development machine (only the `py` launcher). | Harmless inside an activated `.venv`; bootstrap with `py -3 -m venv .venv`. |
 | 2026-10-14 | Edge-flip rate and scheduling in the co-evolutionary loop are unspecified (§5). | No default proposed. |
-| 2026-10-14 | Is r(t) "friendly link density" positive edges / m or positive edges / C(n,2)? | Proposed default: positive / m. |
+| 2026-10-14 | Is r(t) "friendly link density" positive edges / m or positive edges / C(n,2)? | **Resolved 2026-10-14: positive / m (Phase 1 B1, see Made).** |
 | 2026-10-14 | Initial fraction of nodes in state A is unspecified. | Proposed default: A = 0 initially, S = 1 − ρ_0. |
-| 2026-10-14 | Meaning of "dynamic" stock return correlation matrices in §5. | Proposed default: one matrix per call. |
+| 2026-10-14 | Meaning of "dynamic" stock return correlation matrices in §5. | **Resolved 2026-10-14: one matrix per call (Phase 1 C6, see Made).** Sequences and rolling windows remain possible future work, listed below. |
 | 2026-10-14 | Aggregation and normalization of E_p are unspecified (§3.2). | Proposed default: sum of E_ij^p over existing edges, divided by C(n,2). |
 | 2026-10-14 | The §3.1 diagram shows a "Recapitalized" arrow near β_a, but the text lists only four transitions. | Proposed default: exactly the four listed transitions; no A → S. |
 | 2026-10-14 | Sign convention of the §3.3 local formula: A_ij(t'') vs A_ij(t'). | No default proposed. |
 | 2026-10-14 | Steady-state definition, the "clustering" and "natural immunization" metrics, and which two of (α, r_0, ρ_0) are the 3D surface axes (§5). | No default proposed. |
+| 2026-10-14 | Phase 1 C3: MST or k-nearest-neighbour filtering of correlation graphs. | Not in the spec; not implemented. Possible future option. |
+| 2026-10-14 | Phase 1 C6: sequences of correlation matrices and rolling windows. | Out of scope for Phase 1; possible future work. |
+| 2026-10-14 | B2 rounds the float product `r0 * m`, which differs by one from round-half-even of the exact decimal product near half-way points: 14 of 19,701 cases for two-decimal r0 in [0.01, 0.99] and m ≤ 200 (e.g. r0 = 0.07, m = 150 gives 11, not 10). Keep the float product, or round the exact value of `Fraction(str(r0)) * m`? | Proposed default: keep the float product (current, documented behaviour). |

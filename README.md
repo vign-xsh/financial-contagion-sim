@@ -6,16 +6,20 @@ co-evolutionary Monte Carlo.
 
 ## Status
 
-**Phase 0 (scaffolding) only.** The repository, packaging, environment and
-baseline checks are in place. No simulator mathematics is implemented: every
-module under `src/financial_contagion_sim/` except `cli.py` is a docstring
-describing its future responsibility, and the CLI offers `--help` and
-`--version` only.
+**Phase 1 (signed network construction).** The repository, packaging,
+environment and baseline checks are in place, and `graph_builder.py`
+implements the signed network loaders and their validator; its module
+docstring documents the graph contract that later phases rely on. Every other
+module under `src/financial_contagion_sim/` except `cli.py` is still a
+docstring describing its future responsibility, and the CLI offers `--help`
+and `--version` only.
 
 | Feature (spec section) | Module | Status |
 |---|---|---|
-| Barabási–Albert and Erdős–Rényi signed graphs with positive link ratio r_0 (§5) | `graph_builder` | Not implemented |
-| Signed graphs from stock-return correlation matrices (§5) | `graph_builder` | Not implemented |
+| Barabási–Albert and Erdős–Rényi signed graphs with positive link ratio r_0 (§5) | `graph_builder` | Implemented (Phase 1) |
+| Signed graphs from stock-return correlation matrices (§5) | `graph_builder` | Implemented (Phase 1): one matrix per call |
+| Signed-graph validation | `graph_builder` | Implemented (Phase 1) |
+| Correlation sequences or rolling windows; MST / k-NN filtering | `graph_builder` | Not implemented (out of scope; see DECISIONS.md) |
 | CTMC SAIS transition rates (§3.1) | `sais_engine` | Not implemented |
 | Gillespie state-jump logic (§4) | `sais_engine` | Not implemented |
 | Exact O(n^3) triad energy E_Δ (§3.2) | `energy_calculator` | Not implemented |
@@ -101,6 +105,7 @@ src/financial_contagion_sim/
     visualizer.py           matplotlib / plotly figures
 tests/
     test_smoke.py           import, version, CLI --help
+    test_graph_builder.py   signed network loaders and validation
     test_energy.py          skipped until Phase 1
     test_sais.py            skipped until Phase 1
 DECISIONS.md                decision log
