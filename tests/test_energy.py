@@ -14,7 +14,11 @@ import numpy as np
 import pytest
 
 from financial_contagion_sim.energy_calculator import (
+    accept_flip,
     adjacency_matrix,
+    delta_spreading_energy,
+    delta_structural_energy,
+    delta_total_energy,
     exact_structural_energy,
     spreading_energy,
     structural_energy,
@@ -294,3 +298,219 @@ def test_total_energy_bounded(seed: int) -> None:
 def test_total_energy_rejects_bad_alpha(alpha: object, error: type) -> None:
     with pytest.raises(error):
         total_energy(_graph(2, [(0, 1, 1)]), _st("SI"), alpha)
+
+
+# --- local flip differences vs exact recomputation ----------------------------------
+
+TOL = 1e-12  # float deltas vs float recomputation; energies lie in [-1, 1]
+
+
+def _oracle_spreading(g: nx.Graph, states: np.ndarray) -> Fraction:
+    n = g.number_of_nodes()
+    if n < 2:
+        return Fraction(0)
+    pair_sum = sum(
+        s for u, v, s in g.edges(data="sign") if (states[u] == -1) != (states[v] == -1)
+    )
+    return Fraction(pair_sum, math.comb(n, 2))
+
+
+def _flipped(g: nx.Graph, u: int, v: int) -> nx.Graph:
+    h = g.copy()
+    h.edges[u, v]["sign"] = -h.edges[u, v]["sign"]
+    return h
+
+
+def _random_case(seed: int) -> tuple[nx.Graph, np.ndarray, tuple[int, int], float]:
+    rng = np.random.default_rng(1000 + seed)
+    n = int(rng.integers(2, 16))
+    g = _random_signed(seed, n, float(rng.uniform(0.3, 1.0)), float(rng.uniform()))
+    if g.number_of_edges() == 0:
+        g.add_edge(0, 1, sign=1)
+    edges = sorted(g.edges)
+    edge = edges[int(rng.integers(len(edges)))]
+    states = rng.choice(np.array([1, 0, -1], dtype=np.int8), size=n)
+    return g, states, edge, float(rng.uniform())
+
+
+@pytest.mark.parametrize("seed", range(150))
+def test_local_deltas_match_exact_recomputation(seed: int) -> None:
+    g, states, (u, v), alpha = _random_case(seed)
+    h = _flipped(g, u, v)
+    d_struct = _oracle_structural(h) - _oracle_structural(g)
+    d_spread = _oracle_spreading(h, states) - _oracle_spreading(g, states)
+    w = Fraction(alpha)
+    assert delta_total_energy(g, states, u, v, alpha, exact=True) == (
+        w * d_struct + (1 - w) * d_spread
+    )
+    assert delta_total_energy(g, states, u, v, 1.0, exact=True) == d_struct
+    assert delta_total_energy(g, states, u, v, 0.0, exact=True) == d_spread
+    assert delta_structural_energy(g, u, v) == pytest.approx(
+        exact_structural_energy(h) - exact_structural_energy(g), abs=TOL
+    )
+    assert delta_spreading_energy(g, states, u, v) == pytest.approx(
+        spreading_energy(h, states) - spreading_energy(g, states), abs=TOL
+    )
+    assert delta_total_energy(g, states, u, v, alpha) == pytest.approx(
+        total_energy(h, states, alpha) - total_energy(g, states, alpha), abs=TOL
+    )
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_local_deltas_on_dense_and_sparse_graphs(seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    dense = _complete(10, lambda u, v: int(rng.choice([1, -1])))
+    sparse = generate_barabasi_albert(60, 2, 0.5, rng=seed)
+    for g in (dense, sparse):
+        n = g.number_of_nodes()
+        states = rng.choice(np.array([1, 0, -1], dtype=np.int8), size=n)
+        for u, v in sorted(g.edges)[::7]:
+            h = _flipped(g, u, v)
+            assert delta_total_energy(g, states, u, v, 0.6, exact=True) == (
+                Fraction(0.6) * (_oracle_structural(h) - _oracle_structural(g))
+                + (1 - Fraction(0.6))
+                * (_oracle_spreading(h, states) - _oracle_spreading(g, states))
+            )
+
+
+def test_no_common_neighbours_gives_zero_structural_delta() -> None:
+    g = _graph(4, [(0, 1, 1), (1, 2, -1), (2, 3, 1)])
+    assert all(delta_structural_energy(g, u, v) == 0.0 for u, v in g.edges)
+
+
+def test_both_flip_directions_and_double_flip_restore() -> None:
+    for seed in range(30):
+        g, states, (u, v), alpha = _random_case(seed)
+        h = _flipped(g, u, v)
+        forward = delta_total_energy(g, states, u, v, alpha, exact=True)
+        back = delta_total_energy(h, states, u, v, alpha, exact=True)
+        assert forward + back == 0
+        assert delta_structural_energy(h, u, v) == -delta_structural_energy(g, u, v)
+        assert _flipped(h, u, v).edges[u, v]["sign"] == g.edges[u, v]["sign"]
+
+
+def test_two_node_graph_deltas() -> None:
+    g = _graph(2, [(0, 1, 1)])
+    assert delta_structural_energy(g, 0, 1) == 0.0
+    assert delta_spreading_energy(g, _st("SI"), 0, 1) == -2.0
+    assert delta_spreading_energy(g, _st("II"), 0, 1) == 0.0
+    assert delta_total_energy(g, _st("AI"), 0, 1, 0.5, exact=True) == Fraction(-1)
+
+
+def test_delta_functions_do_not_mutate_graph_or_states() -> None:
+    g, states, (u, v), alpha = _random_case(7)
+    before_edges, before_states = sorted(g.edges(data="sign")), states.copy()
+    delta_structural_energy(g, u, v)
+    delta_spreading_energy(g, states, u, v)
+    delta_total_energy(g, states, u, v, alpha)
+    delta_total_energy(g, states, u, v, alpha, exact=True)
+    assert sorted(g.edges(data="sign")) == before_edges
+    assert np.array_equal(states, before_states)
+
+
+@pytest.mark.parametrize(
+    ("call", "error", "match"),
+    [
+        (lambda g, s: delta_structural_energy(g, 0, 2), ValueError, "not an edge"),
+        (lambda g, s: delta_structural_energy(g, 1, 1), ValueError, "must differ"),
+        (lambda g, s: delta_structural_energy(g, 0, 9), ValueError, "not an edge"),
+        (
+            lambda g, s: delta_structural_energy(g, True, 1),
+            TypeError,
+            "i must be an int",
+        ),
+        (
+            lambda g, s: delta_structural_energy(nx.DiGraph(g), 0, 1),
+            TypeError,
+            "simple",
+        ),
+        (
+            lambda g, s: delta_spreading_energy(g, s.astype(int), 0, 1),
+            TypeError,
+            "int8",
+        ),
+        (lambda g, s: delta_spreading_energy(g, s[:2], 0, 1), ValueError, "shape"),
+        (lambda g, s: delta_total_energy(g, s, 0, 1, 1.5), ValueError, "alpha"),
+        (lambda g, s: delta_total_energy(g, s, 0, 1, 0.5, exact=1), TypeError, "exact"),
+    ],
+)
+def test_delta_functions_reject_bad_input(
+    call: Callable[[nx.Graph, np.ndarray], object], error: type, match: str
+) -> None:
+    g = _graph(3, [(0, 1, 1), (1, 2, -1)])
+    with pytest.raises(error, match=match):
+        call(g, _st("SIA"))
+
+
+# --- exact zero test at large n (D6) ----------------------------------------------
+
+
+@pytest.mark.parametrize(("alpha", "common"), [(0.5, 100), (0.25, 300)])
+def test_exact_tie_detected_at_large_n(alpha: float, common: int) -> None:
+    # Edge (0, 1) with `common` positive common neighbours and one infected
+    # endpoint. With n = 302, C(n,3) / C(n,2) = 100, so the structural and
+    # spreading terms cancel exactly for these (alpha, common) pairs.
+    n = 302
+    edges = [(0, 1, 1)] + [(e, k, 1) for k in range(2, 2 + common) for e in (0, 1)]
+    g = _graph(n, edges)
+    states = np.ones(n, dtype=np.int8)
+    states[0] = -1
+    exact = delta_total_energy(g, states, 0, 1, alpha, exact=True)
+    assert isinstance(exact, Fraction)
+    assert exact == 0
+    assert delta_structural_energy(g, 0, 1) != 0
+    assert delta_spreading_energy(g, states, 0, 1) != 0
+    assert abs(delta_total_energy(g, states, 0, 1, alpha)) <= 1e-15
+
+
+# --- acceptance ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "delta", [-1.0, -1e-300, -5, Fraction(-1, 10**40), -math.inf], ids=repr
+)
+def test_negative_delta_always_accepted(delta: object) -> None:
+    rng = np.random.default_rng(0)
+    assert all(accept_flip(delta, rng) for _ in range(200))
+
+
+@pytest.mark.parametrize(
+    "delta", [1.0, 1e-300, 3, Fraction(1, 10**40), math.inf], ids=repr
+)
+def test_positive_delta_never_accepted(delta: object) -> None:
+    rng = np.random.default_rng(0)
+    assert not any(accept_flip(delta, rng) for _ in range(200))
+
+
+@pytest.mark.parametrize("zero", [0.0, -0.0, 0, Fraction(0)], ids=repr)
+def test_zero_delta_accepted_half_the_time(zero: object) -> None:
+    trials = 100_000
+    rng = np.random.default_rng(55)
+    accepted = sum(accept_flip(zero, rng) for _ in range(trials))
+    assert abs(accepted - trials / 2) <= 5 * math.sqrt(trials * 0.25)
+
+
+def test_accept_flip_reproducible() -> None:
+    def decisions(seed: int) -> list[bool]:
+        rng = np.random.default_rng(seed)
+        return [accept_flip(0.0, rng) for _ in range(500)]
+
+    assert decisions(9) == decisions(9)
+    assert decisions(9) != decisions(10)
+    assert accept_flip(0.0, 9) == decisions(9)[0]
+
+
+@pytest.mark.parametrize(
+    ("delta", "rng", "error"),
+    [
+        (math.nan, 0, ValueError),
+        ("0", 0, TypeError),
+        (True, 0, TypeError),
+        (None, 0, TypeError),
+        (np.float64(0.0), None, TypeError),
+    ],
+    ids=["nan", "str", "bool", "none", "bad-rng"],
+)
+def test_accept_flip_rejects_bad_input(delta: object, rng: object, error: type) -> None:
+    with pytest.raises(error):
+        accept_flip(delta, rng)
