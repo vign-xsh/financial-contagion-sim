@@ -36,16 +36,26 @@ non-negative ``int`` seed (passed to ``numpy.random.default_rng``). There is no
 global seeding. One integer seed is drawn from ``rng`` for the networkx
 generator, then the same ``rng`` draws the sign assignment, so the same seed
 always gives the same graph, including its signs.
+
+Correlation graphs (spec §5, step 1): one correlation matrix per call, a NumPy
+array. A pair ``i < j`` becomes an edge iff ``corr_ij != 0`` and
+``|corr_ij| >= tau``; its sign is ``sign(corr_ij)``, and it also stores
+``"distance" = d_ij = sqrt(2 * (1 - corr_ij))``. The distance is unsigned and
+is recorded only, never used to select edges. Correlation graphs record
+``g.graph["r0_realized"]`` (``None`` with no edges).
 """
 
 import math
+from typing import Any
 
 import networkx as nx
 import numpy as np
+import numpy.typing as npt
 
 _SIGN = "sign"
 _VALID_SIGNS = (1, -1)
 _NX_SEED_HIGH = 2**31 - 1
+_CORR_ATOL = 1e-8
 
 
 def validate_signed_graph(g: object) -> None:
@@ -144,6 +154,87 @@ def generate_erdos_renyi(
     _assign_signs(g, r0, generator)
     validate_signed_graph(g)
     return g
+
+
+def graph_from_correlation(corr: npt.NDArray[Any], tau: float) -> "nx.Graph[int]":
+    """Convert a correlation matrix into a signed exposure graph (spec §5, step 1).
+
+    Node ``i`` is row/column ``i`` of ``corr``. Pair ``i < j`` is an edge iff
+    ``corr[i, j] != 0`` and ``|corr[i, j]| >= tau``, with sign
+    ``sign(corr[i, j])`` and ``"distance" = sqrt(2 * (1 - corr[i, j]))``. The
+    upper triangle is used, so within the symmetry tolerance ``corr[i, j]``
+    wins over ``corr[j, i]``.
+
+    Args:
+        corr: Square 2-D NumPy array of real numbers: finite, symmetric and
+            with a unit diagonal, each within ``1e-8``, and entries in
+            ``[-1, 1]``. Entries outside ``[-1, 1]`` by at most ``1e-8`` are
+            clamped onto the bound before the distance is computed; anything
+            further out is rejected.
+        tau: Threshold on ``|corr_ij|``, in ``[0, 1]``.
+
+    Raises:
+        TypeError: ``corr`` is not a real-valued NumPy array, or ``tau`` is not
+            a real number.
+        ValueError: ``corr`` or ``tau`` violates the constraints above.
+    """
+    if not isinstance(corr, np.ndarray):
+        raise TypeError(
+            f"corr must be a numpy.ndarray, got {corr!r} ({type(corr).__name__})"
+        )
+    if not (
+        np.issubdtype(corr.dtype, np.integer) or np.issubdtype(corr.dtype, np.floating)
+    ):
+        raise TypeError(f"corr must have a real numeric dtype, got {corr.dtype}")
+    _check_unit_interval("tau", tau)
+    if corr.ndim != 2 or corr.shape[0] != corr.shape[1]:
+        raise ValueError(f"corr must be a square 2-D array, got shape {corr.shape}")
+    n = corr.shape[0]
+    if n == 0:
+        raise ValueError("corr must be at least 1x1, got shape (0, 0)")
+
+    values = corr.astype(np.float64)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("corr must be finite; found NaN or inf")
+    asymmetry = float(np.max(np.abs(values - values.T)))
+    if asymmetry > _CORR_ATOL:
+        raise ValueError(
+            f"corr must be symmetric within {_CORR_ATOL}; "
+            f"max |corr - corr.T| = {asymmetry:.3g}"
+        )
+    diagonal_error = float(np.max(np.abs(np.diag(values) - 1.0)))
+    if diagonal_error > _CORR_ATOL:
+        raise ValueError(
+            f"corr diagonal must be 1 within {_CORR_ATOL}; "
+            f"max |diag - 1| = {diagonal_error:.3g}"
+        )
+    low, high = float(values.min()), float(values.max())
+    if low < -1.0 - _CORR_ATOL or high > 1.0 + _CORR_ATOL:
+        raise ValueError(
+            f"corr entries must be in [-1, 1] within {_CORR_ATOL}; "
+            f"found min {low!r}, max {high!r}"
+        )
+    values = np.clip(values, -1.0, 1.0)
+
+    g: nx.Graph[int] = nx.Graph()
+    g.add_nodes_from(range(n))
+    rows, cols = np.triu_indices(n, k=1)
+    for i, j in zip(rows.tolist(), cols.tolist(), strict=True):
+        c = float(values[i, j])
+        if c == 0.0 or abs(c) < tau:
+            continue
+        g.add_edge(i, j, sign=1 if c > 0 else -1, distance=_corr_distance(c))
+
+    m = g.number_of_edges()
+    positives = sum(1 for _, _, s in g.edges(data=_SIGN) if s == 1)
+    g.graph["r0_realized"] = positives / m if m else None
+    validate_signed_graph(g)
+    return g
+
+
+def _corr_distance(corr: float) -> float:
+    """Return ``d_ij = sqrt(2 * (1 - corr_ij))`` (spec §5); ``corr`` in [-1, 1]."""
+    return math.sqrt(2.0 * (1.0 - corr))
 
 
 def _assign_signs(g: "nx.Graph[int]", r0: float, rng: np.random.Generator) -> None:

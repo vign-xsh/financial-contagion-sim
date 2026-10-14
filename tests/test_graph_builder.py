@@ -1,5 +1,6 @@
 """Tests for signed financial network construction (``graph_builder``)."""
 
+import math
 from collections.abc import Callable
 
 import networkx as nx
@@ -8,8 +9,10 @@ import pytest
 
 from financial_contagion_sim.graph_builder import (
     _assign_signs,
+    _corr_distance,
     generate_barabasi_albert,
     generate_erdos_renyi,
+    graph_from_correlation,
     validate_signed_graph,
 )
 
@@ -298,3 +301,183 @@ def test_generators_reject_bad_rng(rng: object, error: type, match: str) -> None
         generate_barabasi_albert(10, 2, 0.5, rng)
     with pytest.raises(error, match=match):
         generate_erdos_renyi(10, 0.5, 0.5, rng)
+
+
+# --- graph_from_correlation --------------------------------------------------
+
+TOL = 1e-8
+
+
+def _corr(n: int, entries: dict[tuple[int, int], float]) -> np.ndarray:
+    a = np.eye(n)
+    for (i, j), value in entries.items():
+        a[i, j] = a[j, i] = value
+    return a
+
+
+def test_correlation_hand_built_example() -> None:
+    corr = _corr(4, {(0, 1): 0.8, (0, 2): -0.6, (1, 2): 0.0, (1, 3): 0.3})
+    g = graph_from_correlation(corr, tau=0.5)
+    validate_signed_graph(g)
+    assert sorted(g.nodes) == [0, 1, 2, 3]
+    assert _signed_edges(g) == [(0, 1, 1), (0, 2, -1)]
+    assert g.edges[0, 1]["distance"] == pytest.approx(math.sqrt(0.4))
+    assert g.edges[0, 2]["distance"] == pytest.approx(math.sqrt(3.2))
+    assert g.graph["r0_realized"] == 0.5
+    assert "r0_requested" not in g.graph
+
+
+def test_correlation_distance_formula_special_values() -> None:
+    assert _corr_distance(0.0) == math.sqrt(2.0)
+    assert _corr_distance(1.0) == 0.0
+    assert _corr_distance(-1.0) == 2.0
+    assert _corr_distance(0.5) == pytest.approx(1.0)
+
+
+def test_correlation_extreme_values_through_public_api() -> None:
+    g = graph_from_correlation(_corr(3, {(0, 1): 1.0, (0, 2): -1.0}), tau=0.9)
+    assert g.edges[0, 1]["distance"] == 0.0
+    assert g.edges[0, 1]["sign"] == 1
+    assert g.edges[0, 2]["distance"] == 2.0
+    assert g.edges[0, 2]["sign"] == -1
+
+
+def test_correlation_threshold_is_inclusive_and_symmetric_in_sign() -> None:
+    corr = _corr(4, {(0, 1): 0.5, (0, 2): -0.5, (0, 3): 0.49999})
+    assert _signed_edges(graph_from_correlation(corr, tau=0.5)) == [
+        (0, 1, 1),
+        (0, 2, -1),
+    ]
+
+
+def test_correlation_zero_excluded_even_at_tau_zero() -> None:
+    corr = _corr(3, {(0, 1): 0.0, (0, 2): -0.01, (1, 2): 0.01})
+    g = graph_from_correlation(corr, tau=0.0)
+    assert _signed_edges(g) == [(0, 2, -1), (1, 2, 1)]
+
+
+def test_correlation_tau_one_keeps_only_perfect_correlation() -> None:
+    corr = _corr(3, {(0, 1): 1.0, (0, 2): 0.999, (1, 2): -1.0})
+    assert _signed_edges(graph_from_correlation(corr, tau=1.0)) == [
+        (0, 1, 1),
+        (1, 2, -1),
+    ]
+
+
+def test_correlation_single_asset_and_no_edges() -> None:
+    g = graph_from_correlation(np.array([[1.0]]), tau=0.5)
+    assert list(g.nodes) == [0]
+    assert g.number_of_edges() == 0
+    assert g.graph["r0_realized"] is None
+
+
+def test_correlation_integer_identity_is_accepted() -> None:
+    g = graph_from_correlation(np.eye(3, dtype=int), tau=0.1)
+    assert sorted(g.nodes) == [0, 1, 2]
+    assert g.number_of_edges() == 0
+
+
+def test_correlation_signs_are_python_ints() -> None:
+    g = graph_from_correlation(_corr(3, {(0, 1): 0.9, (1, 2): -0.9}), tau=0.5)
+    assert {type(s) for _, _, s in g.edges(data="sign")} == {int}
+    assert {type(d) for _, _, d in g.edges(data="distance")} == {float}
+
+
+@pytest.mark.parametrize("value", [1.0 + TOL / 2, 1.0 + TOL], ids=["half", "at"])
+def test_correlation_clamps_just_above_one(value: float) -> None:
+    g = graph_from_correlation(_corr(2, {(0, 1): value}), tau=0.5)
+    assert g.edges[0, 1]["distance"] == 0.0
+
+
+@pytest.mark.parametrize("value", [-1.0 - TOL / 2, -1.0 - TOL], ids=["half", "at"])
+def test_correlation_clamps_just_below_minus_one(value: float) -> None:
+    g = graph_from_correlation(_corr(2, {(0, 1): value}), tau=0.5)
+    assert g.edges[0, 1]["distance"] == 2.0
+
+
+@pytest.mark.parametrize("value", [1.0 + 2 * TOL, -1.0 - 2 * TOL, 1.5, -3.0])
+def test_correlation_rejects_out_of_range_beyond_tolerance(value: float) -> None:
+    with pytest.raises(ValueError, match=r"entries must be in \[-1, 1\]"):
+        graph_from_correlation(_corr(2, {(0, 1): value}), tau=0.5)
+
+
+def test_correlation_symmetry_tolerance_uses_upper_triangle() -> None:
+    corr = _corr(2, {(0, 1): 0.6})
+    corr[1, 0] = 0.6 + TOL / 2
+    g = graph_from_correlation(corr, tau=0.6)
+    assert g.edges[0, 1]["distance"] == _corr_distance(0.6)
+
+
+def test_correlation_rejects_asymmetry_beyond_tolerance() -> None:
+    corr = _corr(2, {(0, 1): 0.6})
+    corr[1, 0] = 0.6 + 2 * TOL
+    with pytest.raises(ValueError, match="symmetric within"):
+        graph_from_correlation(corr, tau=0.5)
+
+
+def test_correlation_diagonal_tolerance() -> None:
+    ok = np.eye(2)
+    ok[0, 0] = 1.0 - TOL / 2
+    graph_from_correlation(ok, tau=0.5)
+    bad = np.eye(2)
+    bad[1, 1] = 1.0 + 2 * TOL
+    with pytest.raises(ValueError, match="diagonal must be 1"):
+        graph_from_correlation(bad, tau=0.5)
+    with pytest.raises(ValueError, match="diagonal must be 1"):
+        graph_from_correlation(np.zeros((2, 2)), tau=0.5)
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf], ids=repr)
+def test_correlation_rejects_non_finite(bad: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        graph_from_correlation(_corr(3, {(0, 1): bad}), tau=0.5)
+
+
+@pytest.mark.parametrize(
+    "corr",
+    [np.ones(3), np.ones((2, 3)), np.ones((2, 2, 2)), np.ones((1, 0))],
+    ids=["1d", "2x3", "3d", "1x0"],
+)
+def test_correlation_rejects_non_square(corr: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="square 2-D array"):
+        graph_from_correlation(corr, tau=0.5)
+
+
+def test_correlation_rejects_empty() -> None:
+    with pytest.raises(ValueError, match="at least 1x1"):
+        graph_from_correlation(np.zeros((0, 0)), tau=0.5)
+
+
+@pytest.mark.parametrize(
+    "corr",
+    [[[1.0, 0.5], [0.5, 1.0]], ((1.0,),), "corr", None],
+    ids=["list", "tuple", "str", "none"],
+)
+def test_correlation_rejects_non_ndarray(corr: object) -> None:
+    with pytest.raises(TypeError, match=r"corr must be a numpy\.ndarray"):
+        graph_from_correlation(corr, tau=0.5)
+
+
+@pytest.mark.parametrize(
+    "dtype", [bool, complex, object, "U1"], ids=["bool", "complex", "object", "str"]
+)
+def test_correlation_rejects_non_real_dtype(dtype: object) -> None:
+    corr = np.eye(2).astype(dtype)
+    with pytest.raises(TypeError, match="real numeric dtype"):
+        graph_from_correlation(corr, tau=0.5)
+
+
+@pytest.mark.parametrize(
+    ("tau", "error", "match"),
+    [
+        (-0.1, ValueError, r"tau must be in \[0, 1\]"),
+        (1.1, ValueError, r"tau must be in \[0, 1\]"),
+        (float("nan"), ValueError, r"tau must be in \[0, 1\], got nan"),
+        ("0.5", TypeError, "tau must be a real number"),
+        (None, TypeError, "tau must be a real number"),
+        (True, TypeError, "tau must be a real number"),
+    ],
+)
+def test_correlation_rejects_bad_tau(tau: object, error: type, match: str) -> None:
+    with pytest.raises(error, match=match):
+        graph_from_correlation(np.eye(2), tau)
