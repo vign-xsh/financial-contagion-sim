@@ -208,7 +208,7 @@ def graph_from_correlation(corr: npt.NDArray[Any], tau: float) -> "nx.Graph[int]
             f"corr diagonal must be 1 within {_CORR_ATOL}; "
             f"max |diag - 1| = {diagonal_error:.3g}"
         )
-    low, high = float(values.min()), float(values.max())
+    low, high = float(np.min(values)), float(np.max(values))
     if low < -1.0 - _CORR_ATOL or high > 1.0 + _CORR_ATOL:
         raise ValueError(
             f"corr entries must be in [-1, 1] within {_CORR_ATOL}; "
@@ -218,15 +218,17 @@ def graph_from_correlation(corr: npt.NDArray[Any], tau: float) -> "nx.Graph[int]
 
     g: nx.Graph[int] = nx.Graph()
     g.add_nodes_from(range(n))
+    positives = 0
     rows, cols = np.triu_indices(n, k=1)
     for i, j in zip(rows.tolist(), cols.tolist(), strict=True):
         c = float(values[i, j])
         if c == 0.0 or abs(c) < tau:
             continue
-        g.add_edge(i, j, sign=1 if c > 0 else -1, distance=_corr_distance(c))
+        sign = 1 if c > 0 else -1
+        positives += sign == 1
+        g.add_edge(i, j, sign=sign, distance=_corr_distance(c))
 
     m = g.number_of_edges()
-    positives = sum(1 for _, _, s in g.edges(data=_SIGN) if s == 1)
     g.graph["r0_realized"] = positives / m if m else None
     validate_signed_graph(g)
     return g
