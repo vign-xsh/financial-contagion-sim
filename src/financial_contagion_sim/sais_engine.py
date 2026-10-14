@@ -22,11 +22,24 @@ no A -> S or I -> A transition.
 
 Rate arrays have shape ``(n, 3)``: column ``k`` is the rate at which each node
 jumps to state ``TARGETS[k]``.
+
+Gillespie simulation (direct method). With total rate ``R``, the waiting time
+is ``dt ~ Exp(R)`` (mean ``1/R``) and the event is chosen with probability
+``rate_k / R``. If ``t + dt`` would pass ``t_max``, the clock stops at
+``t_max`` and the event is not applied; by memorylessness that is exact. If
+``R == 0`` (no transition possible) the chain is absorbed and the clock jumps
+to ``t_max``. No fixed time step is used anywhere.
+
+Cost per event: O(n) to rebuild the rates and scan them for the event, plus
+O(deg(v)) to update ``N`` around the node ``v`` that changed state. ``N`` is
+never recomputed globally inside a run. A Fenwick tree over the rates would
+make selection O(log n); it is not implemented.
 """
 
 import enum
 import math
 from dataclasses import dataclass
+from typing import Literal
 
 import networkx as nx
 import numpy as np
@@ -244,6 +257,282 @@ def refresh_after_edge_flip(
         n_pos[i] += change
     if states[i] == _I:
         n_pos[j] += change
+
+
+@dataclass(frozen=True)
+class Event:
+    """One applied state jump.
+
+    Attributes:
+        time: Time at which the jump happened.
+        node: The node that changed state.
+        old_state: Its state before the jump.
+        new_state: Its state after the jump.
+    """
+
+    time: float
+    node: int
+    old_state: State
+    new_state: State
+
+
+@dataclass(frozen=True)
+class StepResult:
+    """Outcome of :func:`gillespie_step`.
+
+    Attributes:
+        reason: ``"event"`` if a jump was applied, ``"t_max"`` if the next jump
+            would fall after ``t_max``, or ``"absorbed"`` if the total rate is 0.
+        time: Clock after the step: the event time, or ``t_max`` otherwise.
+        event: The applied jump, or ``None``.
+    """
+
+    reason: Literal["event", "t_max", "absorbed"]
+    time: float
+    event: Event | None
+
+
+@dataclass(frozen=True)
+class SAISResult:
+    """Outcome of :func:`run_gillespie`.
+
+    Attributes:
+        states: Final state array (a copy; the input is not modified).
+        time: Final clock: ``t_max`` for ``"t_max"`` and ``"absorbed"``, the
+            last event time for ``"max_events"``.
+        n_events: Number of jumps applied.
+        termination_reason: ``"t_max"``, ``"absorbed"`` or ``"max_events"``.
+        events: The applied jumps in order if ``record_events`` was set,
+            otherwise ``None``.
+    """
+
+    states: StateArray
+    time: float
+    n_events: int
+    termination_reason: Literal["t_max", "absorbed", "max_events"]
+    events: tuple[Event, ...] | None
+
+
+def sample_waiting_time(total_rate: float, rng: np.random.Generator | int) -> float:
+    """Draw a waiting time ``dt ~ Exp(total_rate)``, mean ``1 / total_rate``.
+
+    Args:
+        total_rate: Total transition rate ``R`` in 1/time; finite and ``> 0``.
+        rng: ``numpy.random.Generator`` or non-negative ``int`` seed.
+
+    Returns:
+        The waiting time, in time units.
+
+    Raises:
+        TypeError: an argument has the wrong type.
+        ValueError: ``total_rate`` is not finite and positive.
+    """
+    if not isinstance(total_rate, (int, float)) or isinstance(total_rate, bool):
+        raise TypeError(
+            f"total_rate must be a real number, got {total_rate!r} "
+            f"({type(total_rate).__name__})"
+        )
+    if not (math.isfinite(total_rate) and total_rate > 0):
+        raise ValueError(f"total_rate must be finite and > 0, got {total_rate!r}")
+    return _sample_waiting_time(float(total_rate), _as_generator(rng))
+
+
+def select_event(rates: RateArray, rng: np.random.Generator | int) -> tuple[int, State]:
+    """Choose the next jump with probability ``rate_k / R`` (direct method).
+
+    Args:
+        rates: ``(n, 3)`` rate array, as from :func:`compute_rates`.
+        rng: ``numpy.random.Generator`` or non-negative ``int`` seed.
+
+    Returns:
+        ``(node, new_state)``. A zero-rate jump is never chosen. Cost O(n).
+
+    Raises:
+        TypeError: ``rates`` is not a float array.
+        ValueError: ``rates`` has the wrong shape, a negative or non-finite
+            entry, or no positive entry.
+    """
+    if not isinstance(rates, np.ndarray) or not np.issubdtype(rates.dtype, np.floating):
+        raise TypeError("rates must be a floating-point numpy.ndarray")
+    if rates.ndim != 2 or rates.shape[1] != 3:
+        raise ValueError(f"rates must have shape (n, 3), got {rates.shape}")
+    if not np.all(np.isfinite(rates)) or np.any(rates < 0):
+        raise ValueError("rates must be finite and non-negative")
+    if not np.any(rates > 0):
+        raise ValueError("no transition is possible: every rate is 0")
+    return _select_event(rates, _as_generator(rng))
+
+
+def gillespie_step(
+    g: "nx.Graph[int]",
+    states: StateArray,
+    n_pos: CountArray,
+    params: SAISParams,
+    rng: np.random.Generator | int,
+    *,
+    time: float = 0.0,
+    t_max: float = math.inf,
+) -> StepResult:
+    """Advance the chain by at most one jump, updating ``states`` and ``n_pos``.
+
+    Draws ``dt ~ Exp(R)``. If ``time + dt > t_max`` nothing is applied and the
+    result reports ``"t_max"``; if ``R == 0`` it reports ``"absorbed"``. Cost
+    O(n) plus O(deg(v)) for the node ``v`` that changes. The graph is not
+    validated here (it is O(m)); :func:`run_gillespie` validates it once.
+
+    Args:
+        g: Signed graph satisfying the Phase 1 contract.
+        states: State array, updated in place.
+        n_pos: ``N_i`` array consistent with ``g`` and ``states``, updated in
+            place.
+        params: SAIS rate parameters.
+        rng: ``numpy.random.Generator`` (or ``int`` seed; an int re-seeds on
+            every call).
+        time: Current clock, finite and ``>= 0``.
+        t_max: Time horizon, ``>= time``; may be ``math.inf``.
+
+    Returns:
+        The step outcome.
+
+    Raises:
+        TypeError: an argument has the wrong type.
+        ValueError: an argument is invalid.
+    """
+    n = g.number_of_nodes()
+    _check_states(states, n)
+    _check_counts(n_pos, n)
+    _check_params(params)
+    for name, value in (("time", time), ("t_max", t_max)):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise TypeError(f"{name} must be a real number, got {value!r}")
+    if not (math.isfinite(time) and time >= 0):
+        raise ValueError(f"time must be finite and >= 0, got {time!r}")
+    if math.isnan(t_max) or t_max < time:
+        raise ValueError(f"t_max must be >= time, got t_max={t_max!r}, time={time!r}")
+    return _gillespie_step(
+        g, states, n_pos, params, _as_generator(rng), float(time), float(t_max)
+    )
+
+
+def run_gillespie(
+    g: "nx.Graph[int]",
+    states: StateArray,
+    params: SAISParams,
+    t_max: float,
+    rng: np.random.Generator | int,
+    *,
+    max_events: int | None = None,
+    record_events: bool = False,
+) -> SAISResult:
+    """Simulate the SAIS chain on a fixed graph from time 0 to ``t_max``.
+
+    The graph's signs are held fixed; edge dynamics belong to the co-evolution
+    phase. ``N`` is built once in O(n + m) and then updated per event.
+
+    Args:
+        g: Signed graph satisfying the Phase 1 contract.
+        states: Initial state array; it is copied, not modified.
+        params: SAIS rate parameters.
+        t_max: Time horizon, finite and ``>= 0``.
+        rng: ``numpy.random.Generator`` or non-negative ``int`` seed.
+        max_events: Optional cap on the number of jumps, ``>= 0``.
+        record_events: If true, keep every applied jump in ``result.events``.
+
+    Returns:
+        The final state, clock, event count and termination reason.
+
+    Raises:
+        TypeError: an argument has the wrong type.
+        ValueError: an argument is invalid.
+    """
+    validate_signed_graph(g)
+    n = g.number_of_nodes()
+    _check_states(states, n)
+    _check_params(params)
+    if not isinstance(t_max, (int, float)) or isinstance(t_max, bool):
+        raise TypeError(f"t_max must be a real number, got {t_max!r}")
+    if not (math.isfinite(t_max) and t_max >= 0):
+        raise ValueError(f"t_max must be finite and >= 0, got {t_max!r}")
+    if max_events is not None:
+        _check_int("max_events", max_events, minimum=0)
+    if not isinstance(record_events, bool):
+        raise TypeError(f"record_events must be a bool, got {record_events!r}")
+    generator = _as_generator(rng)
+
+    current = states.copy()
+    n_pos = _count_infected_positive_neighbors(g, current)
+    events: list[Event] | None = [] if record_events else None
+    time, n_events = 0.0, 0
+    while True:
+        if max_events is not None and n_events >= max_events:
+            reason: Literal["t_max", "absorbed", "max_events"] = "max_events"
+            break
+        step = _gillespie_step(g, current, n_pos, params, generator, time, float(t_max))
+        time = step.time
+        if step.event is None:
+            reason = "absorbed" if step.reason == "absorbed" else "t_max"
+            break
+        n_events += 1
+        if events is not None:
+            events.append(step.event)
+    return SAISResult(
+        current, time, n_events, reason, None if events is None else tuple(events)
+    )
+
+
+def _sample_waiting_time(total_rate: float, rng: np.random.Generator) -> float:
+    return float(rng.exponential(1.0 / total_rate))
+
+
+def _select_event(rates: RateArray, rng: np.random.Generator) -> tuple[int, State]:
+    flat = rates.ravel()
+    cumulative = np.cumsum(flat)
+    u = rng.random() * cumulative[-1]
+    index = int(np.searchsorted(cumulative, u, side="right"))
+    if index >= flat.size:  # u rounded up to the total; take the last live entry
+        index = int(np.flatnonzero(flat)[-1])
+    node, column = divmod(index, 3)
+    return node, TARGETS[column]
+
+
+def _gillespie_step(
+    g: "nx.Graph[int]",
+    states: StateArray,
+    n_pos: CountArray,
+    params: SAISParams,
+    rng: np.random.Generator,
+    time: float,
+    t_max: float,
+) -> StepResult:
+    rates = _compute_rates(states, n_pos, params)
+    total = float(rates.sum())
+    if total <= 0.0:  # sums of products of finite non-negatives: exact test
+        return StepResult("absorbed", t_max, None)
+    dt = _sample_waiting_time(total, rng)
+    if time + dt > t_max:
+        return StepResult("t_max", t_max, None)
+    node, new_state = _select_event(rates, rng)
+    old_state = State(int(states[node]))
+    _apply_event(g, states, n_pos, node, new_state)
+    event = Event(time + dt, node, old_state, new_state)
+    return StepResult("event", event.time, event)
+
+
+def _apply_event(
+    g: "nx.Graph[int]",
+    states: StateArray,
+    n_pos: CountArray,
+    node: int,
+    new_state: State,
+) -> None:
+    was_infected = states[node] == _I
+    states[node] = new_state
+    is_infected = new_state == _I
+    if was_infected != is_infected:
+        change = 1 if is_infected else -1
+        for neighbour, data in g.adj[node].items():
+            if data["sign"] == 1:
+                n_pos[neighbour] += change
 
 
 def _count_infected_positive_neighbors(
