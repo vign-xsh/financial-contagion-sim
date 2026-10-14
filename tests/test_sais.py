@@ -1,7 +1,7 @@
-"""Tests for SAIS contagion dynamics (``sais_engine``).
+"""Verify CTMC rate/probability bounds and state conservation.
 
-Placeholder: the SAIS engine is not implemented, so nothing is verified here
-yet. Real tests arrive with the Phase 1+ implementation.
+Spec §4, for ``sais_engine``. Skipped: nothing is implemented yet, so nothing
+is verified here until Phase 1+.
 """
 
 import pytest
