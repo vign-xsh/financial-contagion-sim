@@ -55,7 +55,9 @@ def test_signs_are_mutable_in_place() -> None:
 
 
 @pytest.mark.parametrize(
-    "g", [{}, nx.DiGraph(), nx.MultiGraph(), nx.MultiDiGraph()], ids=repr
+    "g",
+    [{}, nx.DiGraph(), nx.MultiGraph(), nx.MultiDiGraph()],
+    ids=["dict", "DiGraph", "MultiGraph", "MultiDiGraph"],
 )
 def test_rejects_non_simple_undirected_graph(g: object) -> None:
     with pytest.raises(TypeError, match="undirected simple networkx.Graph"):
@@ -294,7 +296,7 @@ def test_generators_reject_bad_r0(r0: object, error: type, match: str) -> None:
         (np.random.RandomState(0), TypeError, "rng must be a numpy.random.Generator"),
         (-1, ValueError, "rng seed must be a non-negative int, got -1"),
     ],
-    ids=repr,
+    ids=["None", "float", "bool", "str", "RandomState", "negative"],
 )
 def test_generators_reject_bad_rng(rng: object, error: type, match: str) -> None:
     with pytest.raises(error, match=match):
