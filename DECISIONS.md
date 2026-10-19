@@ -47,6 +47,32 @@
 | 2026-10-14 | Phase 1 D4: n ≥ 1; BA 1 ≤ m < n (so BA needs n ≥ 2); ER p ∈ [0, 1]; r0 ∈ [0, 1]; `bool` is rejected where an int or real is expected; NaN is rejected. | Approved. |
 | 2026-10-14 | Phase 1 E1: `graph_builder` holds no SAIS state, energy or simulation logic, and no node-state attribute. | Approved. |
 | 2026-10-14 | `types-networkx` added to the `[dev]` extra, so mypy strict type-checks networkx calls. | Owner's choice over a `type: ignore` or a mypy override. Dev-only; no runtime dependency. |
+| 2026-10-14 | Resolves the r0 rounding Open item: keep Python `round` on the float product `r0 * m` (round-half-even on the float). The same rule is used for the initial infected count (Phase 2 A7). | Owner's choice. |
+| 2026-10-14 | Phase 2 A1: SAIS states are a `numpy.int8` array indexed by node; `State` IntEnum with SUSCEPTIBLE = 1, ALERT = 0, INFECTED = −1 (spec §3.1); dtype, length and values are validated. | Approved in the Phase 2 decision gate. |
+| 2026-10-14 | Phase 2 A2: `SAISParams` frozen dataclass; β > 0, 0 ≤ β_a < β (β_a == β raises), κ ≥ 0, δ ≥ 0, all finite, `bool` rejected. Rates are in 1/time. | Approved; the β_a bound is spec §3.1. |
+| 2026-10-14 | Phase 2 A3 (resolves the §3.1 "Recapitalized" Open item): exactly the four transitions in the §3.1 text. The diagram's "Recapitalized" arrow is the I → S transition; there is no A → S or I → A. | Owner confirmed. |
+| 2026-10-14 | Phase 2 A4: N_i counts infected neighbours on positive edges only; negative edges contribute nothing. | Approved; spec §3.1 ("defaulted friendly (+1) counterparties"). |
+| 2026-10-14 | Phase 2 A5: total rate R == 0 means the chain is absorbed: not an error; the clock jumps to t_max with reason `"absorbed"`. The test `R <= 0` is exact because rates are sums of products of finite non-negative numbers. | Approved. |
+| 2026-10-14 | Phase 2 A6: `t_max` is required (finite, ≥ 0) and `max_events` optional. dt ~ Exp(R); if t + dt > t_max the clock stops at t_max and the event is not applied (exact by memorylessness). Reasons: `"t_max"`, `"absorbed"`, `"max_events"`. | Approved. |
+| 2026-10-14 | Phase 2 A7: `make_initial_state(n, initial_infected_fraction, rng)` infects exactly `round(ρ0·n)` nodes chosen by `rng`; all others S, none A; reports requested and realized fractions. | Approved. Initial A = 0 remains an Open default because the spec is silent. |
+| 2026-10-14 | Phase 2 A8: `rng` is a `Generator` or non-negative int seed, as in Phase 1; no global state. | Approved. |
+| 2026-10-14 | Phase 2 A9: direct-method selection by an O(n) cumulative scan; N updated in O(deg v) per event and never recomputed globally inside a run. A Fenwick tree (O(log n) selection) is documented, not built. | Approved. |
+| 2026-10-14 | Phase 2 A10–A11: separate pure functions `compute_rates`, `sample_waiting_time`, `select_event`; `gillespie_step` (one event) and `run_gillespie` (to t_max). `run_gillespie` returns a frozen `SAISResult` (final states, time, event count, reason) with an opt-in log of `Event(time, node, old_state, new_state)`; no fixed-step snapshots; S(t)/A(t)/I(t) reconstruction is left to Phase 3. | Approved. |
+| 2026-10-14 | Phase 2 A12: `refresh_after_edge_flip(n_pos, states, i, j, new_sign)` updates N_i and N_j in O(1) after an edge-sign flip. No edge dynamics are implemented. | Approved; hook for Phase 3. |
+| 2026-10-14 | Phase 2 A13: `compute_rates` takes an explicit N array; `infected_positive_neighbors(g, states)` is the full O(n + m) recomputation (also the test oracle); `run_gillespie` builds N once and maintains it. | Approved. |
+| 2026-10-14 | Phase 2 B1–B3: E_Δ sums unordered triples i < j < k over C(n,3), with A_ij ∈ {−1, 0, +1} (0 for non-edges). "Balanced = −1" holds only for complete graphs, and \|E_Δ\| ≪ 1 on sparse graphs (documented). E_Δ = 0.0 for n < 3. | Approved; spec §3.2. |
+| 2026-10-14 | Phase 2 B4: exact engine = `int64` dense trace(A³)/6, integer sum and one division; sparse engine = common-neighbour triangle sum, validated against the exact engine and a brute-force oracle (tests only). `int64` because A³ overflows `int8`. | Approved. |
+| 2026-10-14 | Phase 2 C1: an S or A node and an I node joined by a +1 edge score +1, by a −1 edge −1; every other pair (including I–I) and every non-edge scores 0. | Approved reading of the spec §3.2 table. |
+| 2026-10-14 | Phase 2 C2 (resolves the E_p aggregation Open item): E_p = (sum over edges of E_ij^p) / C(n,2); E_p = 0.0 for n < 2. | Owner approved. A fixed denominator like E_Δ's C(n,3): E_p ∈ [−1, 1] and the local difference is exact. |
+| 2026-10-14 | Phase 2 C3: α ∈ [0, 1], finite; α = 1 gives E_Δ, α = 0 gives E_p; E ∈ [−1, 1] follows. `total_energy` uses the sparse E_Δ engine. | Approved. |
+| 2026-10-14 | Phase 2 D1–D2 (resolves the §3.3 sign-convention Open item): flips apply to existing edges only. dE_Δ = +2·A_ij(old)/C(n,3)·Σ_k A_ik·A_jk, which equals the spec's −2·A_ij(t″)/C(n,3)·Σ A_ik(t′)A_jk(t′) with t″ = after the flip and t′ = before. | Derived independently and verified against brute-force recomputation. |
+| 2026-10-14 | Phase 2 D3: dE_p = −2·c_ij·A_ij(old)/C(n,2) with c_ij = 1 iff exactly one endpoint is I (states fixed); dE = α·dE_Δ + (1 − α)·dE_p. | Approved. |
+| 2026-10-14 | Phase 2 D4: acceptance uses the full energy E, so dE includes dE_p. | Owner approved. |
+| 2026-10-14 | Phase 2 D5: `accept_flip(delta_energy, rng)`: dE < 0 accepts, dE == 0 accepts with probability 0.5, dE > 0 rejects; no temperature; not wired into any loop. | Approved; spec §3.3. |
+| 2026-10-14 | Phase 2 D6: ties are tested exactly. Both numerators are integers and a float α converts exactly to `Fraction`, so `delta_total_energy(..., exact=True)` returns an exact `Fraction` whose `== 0` needs no tolerance at any n. A float result is also available. | Owner approved, over an rtol = 1e-12 test. |
+| 2026-10-14 | Phase 2 D7: dE_Δ costs O(min(deg i, deg j)) (O(n) on dense graphs); dE_p is O(1); the total is not O(1) in general, despite the title of spec §3.3. No common-neighbour cache. | Approved; stated in the module docstring. |
+| 2026-10-14 | Phase 2 E1–E4: pure functions plus frozen dataclasses (`SAISParams`, `InitialState`, `Event`, `StepResult`, `SAISResult`); ValueError / TypeError only; graphs are never mutated by energy or rate functions; `graph_builder.py` unchanged (its private validators are imported, not copied). | Approved. |
+| 2026-10-14 | Phase 2 tests: statistical checks use fixed seeds and 5σ bounds: waiting-time mean and variance (200,000 draws, R = 2.5), event frequencies vs rate shares (60,000 draws), isolated recovery time with mean 1/δ (20,000 trials, δ = 2), and tie acceptance rate 0.5 (100,000 decisions). Float energy differences are compared with recomputation within 1e-12 absolute; exact differences are compared as `Fraction`s with no tolerance. | Non-flaky by construction. |
 
 ## Open
 
@@ -57,12 +83,14 @@
 | 2026-10-11 | `python` and `pip` are not on PATH on the development machine (only the `py` launcher). | Harmless inside an activated `.venv`; bootstrap with `py -3 -m venv .venv`. |
 | 2026-10-14 | Edge-flip rate and scheduling in the co-evolutionary loop are unspecified (§5). | No default proposed. |
 | 2026-10-14 | Is r(t) "friendly link density" positive edges / m or positive edges / C(n,2)? | **Resolved 2026-10-14: positive / m (Phase 1 B1, see Made).** |
-| 2026-10-14 | Initial fraction of nodes in state A is unspecified. | Proposed default: A = 0 initially, S = 1 − ρ_0. |
+| 2026-10-14 | Initial fraction of nodes in state A is unspecified. | Default adopted in Phase 2 (A7): A = 0 initially, S = 1 − ρ_0. Still open: the spec gives no initial A fraction. |
 | 2026-10-14 | Meaning of "dynamic" stock return correlation matrices in §5. | **Resolved 2026-10-14: one matrix per call (Phase 1 C6, see Made).** Sequences and rolling windows remain possible future work, listed below. |
-| 2026-10-14 | Aggregation and normalization of E_p are unspecified (§3.2). | Proposed default: sum of E_ij^p over existing edges, divided by C(n,2). |
-| 2026-10-14 | The §3.1 diagram shows a "Recapitalized" arrow near β_a, but the text lists only four transitions. | Proposed default: exactly the four listed transitions; no A → S. |
-| 2026-10-14 | Sign convention of the §3.3 local formula: A_ij(t'') vs A_ij(t'). | No default proposed. |
+| 2026-10-14 | Aggregation and normalization of E_p are unspecified (§3.2). | **Resolved 2026-10-14 (Phase 2 C2, see Made).** |
+| 2026-10-14 | The §3.1 diagram shows a "Recapitalized" arrow near β_a, but the text lists only four transitions. | **Resolved 2026-10-14 (Phase 2 A3, see Made).** |
+| 2026-10-14 | Sign convention of the §3.3 local formula: A_ij(t'') vs A_ij(t'). | **Resolved 2026-10-14: t″ = after the flip (Phase 2 D2, see Made).** |
 | 2026-10-14 | Steady-state definition, the "clustering" and "natural immunization" metrics, and which two of (α, r_0, ρ_0) are the 3D surface axes (§5). | No default proposed. |
 | 2026-10-14 | Phase 1 C3: MST or k-nearest-neighbour filtering of correlation graphs. | Not in the spec; not implemented. Possible future option. |
 | 2026-10-14 | Phase 1 C6: sequences of correlation matrices and rolling windows. | Out of scope for Phase 1; possible future work. |
-| 2026-10-14 | B2 rounds the float product `r0 * m`, which differs by one from round-half-even of the exact decimal product near half-way points: 14 of 19,701 cases for two-decimal r0 in [0.01, 0.99] and m ≤ 200 (e.g. r0 = 0.07, m = 150 gives 11, not 10). Keep the float product, or round the exact value of `Fraction(str(r0)) * m`? | Proposed default: keep the float product (current, documented behaviour). |
+| 2026-10-14 | B2 rounds the float product `r0 * m`, which differs by one from round-half-even of the exact decimal product near half-way points: 14 of 19,701 cases for two-decimal r0 in [0.01, 0.99] and m ≤ 200 (e.g. r0 = 0.07, m = 150 gives 11, not 10). Keep the float product, or round the exact value of `Fraction(str(r0)) * m`? | **Resolved 2026-10-14: keep the float product (see Made).** |
+| 2026-10-14 | Phase 3 must define how the S(t), A(t), I(t) time series are recorded from the Gillespie event log (Phase 2 A11). | No default proposed. |
+| 2026-10-14 | Faster SAIS event selection (Fenwick tree, O(log n)) and a common-neighbour cache for O(1)-amortized dE_Δ. | Documented, not built; revisit if Phase 3 profiling needs it. |
