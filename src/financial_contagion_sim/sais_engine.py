@@ -607,10 +607,16 @@ def _compute_rates(
     neighbours = n_pos.astype(np.float64)
     susceptible = states == _S
     alert = states == _A
-    rates[susceptible, _TO_I] = params.beta * neighbours[susceptible]
-    rates[susceptible, _TO_A] = params.kappa * neighbours[susceptible]
-    rates[alert, _TO_I] = params.beta_a * neighbours[alert]
+    with np.errstate(over="ignore"):  # overflow is reported below, not warned
+        rates[susceptible, _TO_I] = params.beta * neighbours[susceptible]
+        rates[susceptible, _TO_A] = params.kappa * neighbours[susceptible]
+        rates[alert, _TO_I] = params.beta_a * neighbours[alert]
     rates[states == _I, _TO_S] = params.delta
+    if not np.all(np.isfinite(rates)):
+        raise ValueError(
+            "SAIS rates overflow float64: a rate times N_i exceeds "
+            f"{np.finfo(np.float64).max:.3g}; use smaller rate parameters"
+        )
     return rates
 
 
