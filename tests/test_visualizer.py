@@ -1,6 +1,7 @@
 """Tests for the visualization engine (``visualizer``); spec §5, step 3."""
 
 from collections.abc import Callable
+from html.parser import HTMLParser
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -9,10 +10,18 @@ import pytest
 from matplotlib.figure import Figure
 
 from financial_contagion_sim.simulator import SimulationResult
+from financial_contagion_sim.sweep import (
+    MetricSurface,
+    SteadyStateSettings,
+    SweepGrid,
+    SweepResult,
+)
 from financial_contagion_sim.visualizer import (
     SYNTHETIC_CAPTION,
+    plot_surface,
     plot_timeseries,
     save_figure,
+    write_surface_html,
 )
 
 Factory = Callable[..., SimulationResult]
@@ -155,3 +164,133 @@ def test_rejects_bad_input(result: SimulationResult, tmp_path: Path) -> None:
         save_figure(plot_timeseries(result), f"{tmp_path}/out.pdf")
     with pytest.raises(TypeError, match="Figure"):
         save_figure("figure", f"{tmp_path}/out.png")
+
+
+# --- 3D surfaces ---------------------------------------------------------------
+
+# Asymmetric grid (3 alpha x 2 r0 x 2 rho_0) with distinct values per cell, so
+# a transposed or mis-indexed z cannot match.
+SURFACE_GRID = SweepGrid(alpha=(0.0, 0.5, 1.0), r0=(0.2, 0.8), rho0=(0.05, 0.2))
+
+
+def _sweep_result() -> SweepResult:
+    from tests.conftest import FIXTURE_CONFIG
+
+    shape = SURFACE_GRID.shape
+    rho_mean = np.arange(12, dtype=float).reshape(shape) / 100
+    rho_mean[1, 0, 2] = np.nan
+    energy_mean = -np.arange(12, dtype=float).reshape(shape) / 1000
+
+    def surface(mean: np.ndarray) -> MetricSurface:
+        return MetricSurface(
+            mean, mean / 10, mean / 20, np.arange(12, dtype=np.int64).reshape(shape) % 4
+        )
+
+    return SweepResult(
+        grid=SURFACE_GRID,
+        repetitions=3,
+        settings=SteadyStateSettings(),
+        base_config=FIXTURE_CONFIG,
+        seed=3,
+        config_hash="0" * 64,
+        runs=(),
+        rho_inf=surface(rho_mean),
+        energy=surface(energy_mean),
+    )
+
+
+@pytest.mark.parametrize("metric", ["rho_inf", "energy"])
+def test_surface_data_matches_sweep_arrays(metric: str) -> None:
+    sweep = _sweep_result()
+    expected = sweep.rho_inf if metric == "rho_inf" else sweep.energy
+    fig = plot_surface(sweep, metric)
+    assert len(fig.data) == len(SURFACE_GRID.rho0)
+    for p, trace in enumerate(fig.data):
+        z = np.asarray(trace.z, dtype=float)
+        assert z.shape == (2, 3)  # z[r0_index][alpha_index]
+        assert np.array_equal(z, expected.mean[p], equal_nan=True)
+        assert list(trace.x) == list(SURFACE_GRID.alpha)
+        assert list(trace.y) == list(SURFACE_GRID.r0)
+    assert np.isnan(np.asarray(fig.data[1].z, dtype=float)[0, 2]) == (
+        metric == "rho_inf"
+    )
+
+
+def test_surface_orientation_cell_by_cell() -> None:
+    sweep = _sweep_result()
+    trace = plot_surface(sweep, "rho_inf").data[0]
+    z = np.asarray(trace.z, dtype=float)
+    for r in range(2):
+        for a in range(3):
+            assert z[r][a] == sweep.rho_inf.mean[0, r, a]
+            assert (
+                f"alpha={SURFACE_GRID.alpha[a]:g}<br>r0={SURFACE_GRID.r0[r]:g}"
+                in trace.text[r][a]
+            )
+
+
+def test_dropdown_and_visibility() -> None:
+    fig = plot_surface(_sweep_result(), "energy")
+    assert [t.visible for t in fig.data] == [True, False]
+    buttons = fig.layout.updatemenus[0].buttons
+    assert [b.label for b in buttons] == ["rho_0 = 0.05", "rho_0 = 0.2"]
+    assert [b.args[0]["visible"] for b in buttons] == [[True, False], [False, True]]
+
+
+def test_hover_text_reports_variability() -> None:
+    sweep = _sweep_result()
+    text = plot_surface(sweep, "rho_inf").data[0].text[1][2]
+    mean = sweep.rho_inf.mean[0, 1, 2]
+    assert f"std={mean / 10:.6g}" in text and f"SE={mean / 20:.6g}" in text
+    assert f"k={sweep.rho_inf.k_converged[0, 1, 2]}/3 converged" in text
+    assert "mean=NaN" in plot_surface(sweep, "rho_inf").data[1].text[0][2]
+
+
+def test_surface_labels_and_caption() -> None:
+    fig = plot_surface(_sweep_result(), "rho_inf")
+    assert "rho_inf" in fig.layout.title.text and "synthetic" in fig.layout.title.text
+    assert fig.layout.annotations[0].text == SYNTHETIC_CAPTION
+    assert fig.layout.scene.xaxis.title.text.startswith("alpha")
+    assert fig.layout.scene.yaxis.title.text.startswith("r0")
+
+
+def test_surface_rejects_bad_input() -> None:
+    with pytest.raises(ValueError, match="metric"):
+        plot_surface(_sweep_result(), "clustering")
+    with pytest.raises(TypeError, match="SweepResult"):
+        plot_surface({"grid": None}, "rho_inf")
+
+
+class _Scripts(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sources: list[str] = []
+        self.inline = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "script":
+            src = dict(attrs).get("src")
+            if src is None:
+                self.inline += 1
+            else:
+                self.sources.append(src)
+
+
+def test_html_is_self_contained(tmp_path: Path) -> None:
+    path = tmp_path / "surface_rho_infinity.html"
+    write_surface_html(plot_surface(_sweep_result(), "rho_inf"), path)
+    html = path.read_text(encoding="utf-8")
+    parser = _Scripts()
+    parser.feed(html)
+    assert parser.inline >= 2 and parser.sources == []
+    assert '<script src="http' not in html and 'src="//' not in html
+    assert "rho_0 = 0.05" in html and SYNTHETIC_CAPTION in html
+    assert path.stat().st_size > 1_000_000  # plotly.js is embedded
+
+
+def test_write_surface_html_rejects_bad_input(tmp_path: Path) -> None:
+    fig = plot_surface(_sweep_result(), "rho_inf")
+    with pytest.raises(ValueError, match=r"\.html"):
+        write_surface_html(fig, tmp_path / "x.png")
+    with pytest.raises(TypeError, match="plotly Figure"):
+        write_surface_html(plot_timeseries, tmp_path / "x.html")

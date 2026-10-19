@@ -56,7 +56,6 @@ from financial_contagion_sim.simulator import (
     SimulationConfig,
     SimulationResult,
 )
-from financial_contagion_sim.visualizer import plot_timeseries, save_figure
 
 ARTIFACT_SCHEMA_VERSION = 1
 """Version of the on-disk artifact layout."""
@@ -358,6 +357,10 @@ def write_run_artifacts(
         write_json(staging / "metadata.json", metadata)
         write_metrics_csv(staging / "metrics.csv", result)
         if plot:
+            # Imported here: visualizer -> sweep -> artifacts would otherwise
+            # form an import cycle.
+            from financial_contagion_sim.visualizer import plot_timeseries, save_figure
+
             save_figure(plot_timeseries(result), staging / "timeseries.png")
     return output_dir / run_id
 
