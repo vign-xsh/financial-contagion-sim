@@ -41,6 +41,46 @@ def _graph(n: int, edges: list[tuple[int, int, int]]) -> nx.Graph:
     return g
 
 
+def test_version_has_one_source_of_truth(tmp_path: Path) -> None:
+    """``__version__`` (the only definition) equals the installed metadata, the
+    CLI's ``--version``, the result's ``versions`` and ``metadata.json`` (E4)."""
+    import importlib.metadata
+    import json
+    import tomllib
+
+    import financial_contagion_sim
+    from financial_contagion_sim.artifacts import environment_metadata
+
+    version = financial_contagion_sim.__version__
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert project["project"]["dynamic"] == ["version"]
+    assert "version" not in project["project"]
+    assert project["tool"]["setuptools"]["dynamic"]["version"] == {
+        "attr": "financial_contagion_sim.__version__"
+    }
+    assert importlib.metadata.version("financial-contagion-sim") == version
+    assert environment_metadata([])["versions"]["financial_contagion_sim"] == version
+    proc = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "main.py"), "--version"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.strip() == f"financial-contagion-sim {version}"
+    result = simulate(
+        _graph(2, [(0, 1, 1)]),
+        np.ones(2, dtype=np.int8),
+        SAISParams(1.0, 0.0, 0.0, 1.0),
+        0.5,
+        0.0,
+        0.5,
+        seed=0,
+    )
+    assert result.versions["financial_contagion_sim"] == version
+    assert json.loads(json.dumps(result.versions))["financial_contagion_sim"] == version
+    assert version == "0.1.0"
+
+
 def test_rate_overflow_is_reported_clearly() -> None:
     """beta is finite, but beta * N_i overflows float64 (defect D-2)."""
     g = _graph(3, [(0, 1, 1), (0, 2, 1)])
