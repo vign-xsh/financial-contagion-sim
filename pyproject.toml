@@ -51,3 +51,9 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 python_version = "3.11"
 strict = true
 warn_unreachable = true
+
+# plotly ships no type information and has no typeshed stubs; only its imports
+# are exempt, so strict mode still applies to all project code.
+[[tool.mypy.overrides]]
+module = ["plotly", "plotly.*"]
+ignore_missing_imports = true
