@@ -155,10 +155,33 @@ def structural_energy(g: "nx.Graph[int]") -> float:
         TypeError: ``g`` violates the Phase 1 contract's types.
         ValueError: ``g`` violates the Phase 1 contract's values.
     """
-    validate_signed_graph(g)
+    triad_sum = structural_triad_sum(g)
     n = g.number_of_nodes()
     if n < 3:
         return 0.0
+    return -triad_sum / math.comb(n, 3)
+
+
+def structural_triad_sum(g: "nx.Graph[int]") -> int:
+    """Exact integer triad sum ``S3 = sum over i < j < k of A_ij A_jk A_ki``.
+
+    ``E_delta = -S3 / C(n, 3)`` (spec §3.2). This is the integer that
+    :func:`structural_energy` divides; the simulator keeps it updated exactly
+    instead of recomputing it. Each triangle is counted once, from its edge
+    ``(u, v)`` with third vertex ``w > max(u, v)``. Cost O(sum over edges of
+    min(deg u, deg v)).
+
+    Args:
+        g: Signed graph satisfying the Phase 1 contract.
+
+    Returns:
+        ``S3`` as a Python ``int``; ``0`` when there are no triangles.
+
+    Raises:
+        TypeError: ``g`` violates the Phase 1 contract's types.
+        ValueError: ``g`` violates the Phase 1 contract's values.
+    """
+    validate_signed_graph(g)
     adj = g.adj
     triad_sum = 0
     for u, v, data in g.edges(data=True):
@@ -166,7 +189,165 @@ def structural_energy(g: "nx.Graph[int]") -> float:
         for w in _common_neighbors(g, u, v):
             if w > top:
                 triad_sum += data["sign"] * adj[u][w]["sign"] * adj[v][w]["sign"]
-    return -triad_sum / math.comb(n, 3)
+    return triad_sum
+
+
+def spreading_pair_sum(g: "nx.Graph[int]", states: StateArray) -> int:
+    """Exact integer pair sum ``P = sum over edges of E_ij^p`` (spec §3.2).
+
+    ``E_ij^p = A_ij`` when exactly one endpoint is infected and 0 otherwise, and
+    ``E_p = P / C(n, 2)`` (approved Phase 2 aggregation). Cost O(n + m).
+
+    Args:
+        g: Signed graph satisfying the Phase 1 contract.
+        states: ``numpy.int8`` state array of length ``n``.
+
+    Returns:
+        ``P`` as a Python ``int``.
+
+    Raises:
+        TypeError: ``g`` or ``states`` has the wrong type.
+        ValueError: ``g`` or ``states`` is invalid.
+    """
+    validate_signed_graph(g)
+    _check_states(states, g.number_of_nodes())
+    pair_sum = 0
+    for u, v, data in g.edges(data=True):
+        if (states[u] == _INFECTED) != (states[v] == _INFECTED):
+            pair_sum += data["sign"]
+    return pair_sum
+
+
+@overload
+def energy_from_sums(
+    s3: int, p: int, n: int, alpha: float, *, exact: Literal[False] = False
+) -> float: ...
+
+
+@overload
+def energy_from_sums(
+    s3: int, p: int, n: int, alpha: float, *, exact: Literal[True]
+) -> Fraction: ...
+
+
+def energy_from_sums(
+    s3: int, p: int, n: int, alpha: float, *, exact: bool = False
+) -> float | Fraction:
+    """Total energy from the integer sums: ``alpha*(-S3/C(n,3)) + (1-alpha)*P/C(n,2)``.
+
+    The map is linear in ``(S3, P)``, so passing the *changes* ``(dS3, dP)``
+    from :func:`flip_energy_numerators` gives the energy *change* ``dE``. The
+    ``n < 3`` and ``n < 2`` terms are 0, as for the energies themselves.
+
+    Args:
+        s3: Triad sum (or its change), an ``int``.
+        p: Pair sum (or its change), an ``int``.
+        n: Number of nodes, ``>= 1``.
+        alpha: Weight in ``[0, 1]``; ``alpha = 1`` gives ``E_delta`` and
+            ``alpha = 0`` gives ``E_p``.
+        exact: If true, return an exact ``Fraction``; otherwise a float.
+
+    Returns:
+        The energy (or energy change).
+
+    Raises:
+        TypeError: an argument has the wrong type.
+        ValueError: an argument is out of range.
+    """
+    for name, value in (("s3", s3), ("p", p)):
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise TypeError(f"{name} must be an int, got {value!r}")
+    _check_int("n", n, minimum=1)
+    _check_unit_interval("alpha", alpha)
+    if not isinstance(exact, bool):
+        raise TypeError(f"exact must be a bool, got {exact!r}")
+    c3, c2 = math.comb(n, 3), math.comb(n, 2)
+    if exact:
+        weight = Fraction(alpha)
+        structural = Fraction(-s3, c3) if c3 else Fraction(0)
+        spreading = Fraction(p, c2) if c2 else Fraction(0)
+        return weight * structural + (1 - weight) * spreading
+    structural_float = -s3 / c3 if c3 else 0.0
+    spreading_float = p / c2 if c2 else 0.0
+    return alpha * structural_float + (1 - alpha) * spreading_float
+
+
+def flip_energy_numerators(
+    g: "nx.Graph[int]", states: StateArray, i: int, j: int
+) -> tuple[int, int]:
+    """Exact changes ``(dS3, dP)`` of the integer sums if edge ``(i, j)`` flips.
+
+    ``dS3 = -2 * A_ij_old * sum_k A_ik A_jk`` and ``dP = -2 * c_ij * A_ij_old``
+    (spec §3.3; see the module docstring). Nothing is modified. Cost
+    O(min(deg i, deg j)).
+
+    Args:
+        g: Signed graph satisfying the Phase 1 contract.
+        states: ``numpy.int8`` state array of length ``n``.
+        i: One endpoint of an existing edge.
+        j: The other endpoint.
+
+    Returns:
+        ``(dS3, dP)`` as Python ints.
+
+    Raises:
+        TypeError: an argument has the wrong type.
+        ValueError: an argument is invalid.
+    """
+    a_old = _edge_sign(g, i, j)
+    _check_endpoint_states(states, g.number_of_nodes(), i, j)
+    return (
+        -_triad_flip_numerator(g, i, j, a_old),
+        _spread_flip_numerator(states, i, j, a_old),
+    )
+
+
+def state_change_pair_delta(
+    g: "nx.Graph[int]", states: StateArray, v: int, new_state: int
+) -> int:
+    """Exact change ``dP`` of the pair sum if node ``v`` moves to ``new_state``.
+
+    ``dP = sum over edges (v, u) of A_vu * (c(new, x_u) - c(old, x_u))``, where
+    ``c(x, y) = 1`` iff exactly one of ``x, y`` is infected. Nothing is
+    modified. Cost O(deg v).
+
+    Args:
+        g: Signed graph satisfying the Phase 1 contract.
+        states: ``numpy.int8`` state array of length ``n``, before the change.
+        v: The node changing state.
+        new_state: Its new state, ``1``, ``0`` or ``-1``.
+
+    Returns:
+        ``dP`` as a Python int.
+
+    Raises:
+        TypeError: an argument has the wrong type.
+        ValueError: an argument is invalid.
+    """
+    if not isinstance(g, nx.Graph) or g.is_directed() or g.is_multigraph():
+        raise TypeError(
+            f"g must be an undirected simple networkx.Graph, got {type(g).__name__}"
+        )
+    n = g.number_of_nodes()
+    _check_int("v", v, minimum=0)
+    if v >= n:
+        raise ValueError(f"v must be < n={n}, got {v}")
+    if not isinstance(new_state, int) or isinstance(new_state, bool):
+        raise TypeError(f"new_state must be an int, got {new_state!r}")
+    if new_state not in (1, 0, -1):
+        raise ValueError(f"new_state must be in {{1, 0, -1}}, got {new_state}")
+    _check_endpoint_states(states, n, v, v)
+    was_infected = states[v] == _INFECTED
+    is_infected = new_state == _INFECTED
+    if was_infected == is_infected:
+        return 0
+    delta = 0
+    for u, data in g.adj[v].items():
+        u_infected = states[u] == _INFECTED
+        before = int(was_infected != u_infected)
+        after = int(is_infected != u_infected)
+        delta += data["sign"] * (after - before)
+    return delta
 
 
 def spreading_energy(g: "nx.Graph[int]", states: StateArray) -> float:
@@ -185,15 +366,10 @@ def spreading_energy(g: "nx.Graph[int]", states: StateArray) -> float:
         TypeError: ``g`` or ``states`` has the wrong type.
         ValueError: ``g`` or ``states`` is invalid.
     """
-    validate_signed_graph(g)
+    pair_sum = spreading_pair_sum(g, states)
     n = g.number_of_nodes()
-    _check_states(states, n)
     if n < 2:
         return 0.0
-    pair_sum = 0
-    for u, v, data in g.edges(data=True):
-        if (states[u] == _INFECTED) != (states[v] == _INFECTED):
-            pair_sum += data["sign"]
     return pair_sum / math.comb(n, 2)
 
 
@@ -334,15 +510,11 @@ def delta_total_energy(
     a_old = _edge_sign(g, i, j)
     n = g.number_of_nodes()
     _check_endpoint_states(states, n, i, j)
-    k_delta = _triad_flip_numerator(g, i, j, a_old)
-    k_p = _spread_flip_numerator(states, i, j, a_old)
-    c3, c2 = math.comb(n, 3), math.comb(n, 2)
+    d_s3 = -_triad_flip_numerator(g, i, j, a_old)
+    d_p = _spread_flip_numerator(states, i, j, a_old)
     if exact:
-        weight = Fraction(alpha)
-        structural = Fraction(k_delta, c3) if c3 else Fraction(0)
-        return weight * structural + (1 - weight) * Fraction(k_p, c2)
-    structural_float = k_delta / c3 if c3 else 0.0
-    return alpha * structural_float + (1 - alpha) * (k_p / c2)
+        return energy_from_sums(d_s3, d_p, n, alpha, exact=True)
+    return energy_from_sums(d_s3, d_p, n, alpha)
 
 
 def accept_flip(delta_energy: float | Fraction, rng: np.random.Generator | int) -> bool:
