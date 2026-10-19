@@ -93,6 +93,13 @@ RESULTS_COLUMNS = (
 )
 _SWEPT_FIELDS = ("alpha", "r0", "initial_infected_fraction", "seed")
 
+# Approved defaults (Phase 4 B2, B6); the CLI reads them from here.
+DEFAULT_ALPHA_RANGE = (0.0, 1.0, 11)
+DEFAULT_R0_RANGE = (0.0, 1.0, 11)
+DEFAULT_RHO0_VALUES = (0.05, 0.10, 0.20)
+DEFAULT_REPETITIONS = 5
+DEFAULT_MAX_RUNS = 2000
+
 
 # --- grid ------------------------------------------------------------------
 
