@@ -6,14 +6,15 @@ co-evolutionary Monte Carlo.
 
 ## Status
 
-**Phase 2 (SAIS dynamics and network energy).** `graph_builder.py` (Phase 1)
-builds and validates signed networks. `sais_engine.py` implements the SAIS
-transition rates and Gillespie simulation on a fixed graph, and
-`energy_calculator.py` implements the structural, spreading and total energies
-and their local edge-flip differences. Each module docstring documents its
-conventions. The co-evolutionary loop (`simulator.py`) and plotting
-(`visualizer.py`) are still docstrings only, and the CLI offers `--help` and
-`--version` only.
+**Phase 3 (co-evolutionary simulation engine).** `graph_builder.py` (Phase 1)
+builds and validates signed networks. `sais_engine.py` (Phase 2) implements
+the SAIS transition rates and Gillespie simulation, and `energy_calculator.py`
+(Phase 2) the structural, spreading and total energies and their edge-flip
+differences. `simulator.py` (Phase 3) runs SAIS contagion and edge-sign flips
+as one continuous-time process and records S(t), A(t), I(t), r(t) and E(G_t).
+Each module docstring documents its conventions. Plotting (`visualizer.py`),
+steady-state estimation, parameter sweeps and CLI simulation commands are not
+implemented yet; the CLI offers `--help` and `--version` only.
 
 | Feature (spec section) | Module | Status |
 |---|---|---|
@@ -27,7 +28,8 @@ conventions. The co-evolutionary loop (`simulator.py`) and plotting
 | Pairwise spreading energy E_p and total energy E(G_t) (§3.2) | `energy_calculator` | Implemented (Phase 2): E_p normalized by C(n,2) |
 | Local energy difference for an edge-sign flip (§3.3) | `energy_calculator` | Implemented (Phase 2): O(min degree), not O(1) |
 | Flip acceptance rule (§3.3) | `energy_calculator` | Implemented (Phase 2): not yet used by any loop |
-| Co-evolutionary Monte Carlo loop tracking S(t), A(t), I(t), r(t), E(G_t) (§5) | `simulator` | Not implemented |
+| Co-evolutionary Monte Carlo loop tracking S(t), A(t), I(t), r(t), E(G_t) (§5) | `simulator` | Implemented (Phase 3): joint CTMC, per-edge flip rate γ |
+| Steady-state estimation and parameter sweeps (§5) | — | Not implemented (Phase 4) |
 | 2D state-trajectory plots (§5) | `visualizer` | Not implemented |
 | 3D Plotly surface plots exported as `.html` (§5) | `visualizer` | Not implemented |
 | CLI simulation commands (§4) | `cli` / `main.py` | Not implemented (`--help` and `--version` only) |
@@ -103,13 +105,16 @@ src/financial_contagion_sim/
     graph_builder.py        signed financial network construction
     sais_engine.py          SAIS rates and Gillespie simulation
     energy_calculator.py    structural, spreading and total energy; flip deltas
-    simulator.py            co-evolutionary Monte Carlo orchestration
+    simulator.py            co-evolutionary simulation (SAIS + edge-sign flips)
     visualizer.py           matplotlib / plotly figures
 tests/
     test_smoke.py           import, version, CLI --help
     test_graph_builder.py   signed network loaders and validation
     test_energy.py          energies, local deltas vs exact recomputation
     test_sais.py            SAIS rates, conservation, Gillespie statistics
+    test_simulator.py       configuration, invariants, co-evolution, streams
+scripts/
+    benchmark_simulator.py  measured events per second (not a test)
 DECISIONS.md                decision log
 docs/spec/specification.pdf project specification
 ```
@@ -159,6 +164,51 @@ python -m build
 python main.py --help
 financial-contagion-sim --version
 ```
+
+From Python (every physical parameter must be given; there are no defaults):
+
+```python
+from financial_contagion_sim.sais_engine import SAISParams
+from financial_contagion_sim.simulator import SimulationConfig, run_simulation
+
+config = SimulationConfig(
+    n=200,
+    topology="erdos_renyi",
+    er_p=0.05,
+    sais_params=SAISParams(beta=0.5, beta_a=0.1, kappa=0.3, delta=1.0),
+    alpha=0.5,
+    r0=0.6,
+    initial_infected_fraction=0.1,
+    edge_update_rate=1.0,
+    t_max=50.0,
+    seed=0,
+)
+result = run_simulation(config)  # result.times, result.I, result.r, result.E, ...
+```
+
+`simulate(graph, initial_states, ...)` runs the same engine on a graph you
+build yourself, such as one from `graph_from_correlation`.
+
+## Co-evolution mechanics
+
+The spec does not say how often edges are updated, so the approved model
+(DECISIONS.md, Phase 3) is one continuous-time Markov chain with two channels:
+
+- **SAIS jumps** at the §3.1 rates (total `R_sais`).
+- **Edge-flip proposals**: every edge proposes a sign flip at rate γ
+  (`edge_update_rate`), so `R_net = γ·m`. A proposal is accepted if it lowers
+  the total energy E, with probability 1/2 if E is unchanged, and rejected if
+  it raises E (§3.3). Only signs change; edges are never added or removed.
+
+The waiting time to the next event is exponential with rate
+`R_sais + R_net`, and the channel is chosen in proportion to its rate. There
+is no fixed time step.
+
+**Modelling note.** On sparse graphs most edges have no common neighbours and
+no infected endpoint, so flipping them leaves E exactly unchanged. Those flips
+are accepted half the time, and the signs of such edges random-walk towards a
+friendly-link density of r = 0.5. This follows from the §3.3 rule; it is not a
+bug.
 
 ## Workflow
 

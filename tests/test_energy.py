@@ -19,9 +19,14 @@ from financial_contagion_sim.energy_calculator import (
     delta_spreading_energy,
     delta_structural_energy,
     delta_total_energy,
+    energy_from_sums,
     exact_structural_energy,
+    flip_energy_numerators,
     spreading_energy,
+    spreading_pair_sum,
+    state_change_pair_delta,
     structural_energy,
+    structural_triad_sum,
     total_energy,
 )
 from financial_contagion_sim.graph_builder import (
@@ -514,3 +519,97 @@ def test_accept_flip_reproducible() -> None:
 def test_accept_flip_rejects_bad_input(delta: object, rng: object, error: type) -> None:
     with pytest.raises(error):
         accept_flip(delta, rng)
+
+
+# --- integer sums (Phase 3 amendment) ----------------------------------------------
+
+
+def _oracle_pair_sum(g: nx.Graph, states: np.ndarray) -> int:
+    return sum(
+        s for u, v, s in g.edges(data="sign") if (states[u] == -1) != (states[v] == -1)
+    )
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_integer_sums_match_oracles(seed: int) -> None:
+    g, states, _, alpha = _random_case(seed)
+    n = g.number_of_nodes()
+    s3, p = structural_triad_sum(g), spreading_pair_sum(g, states)
+    assert type(s3) is int and type(p) is int
+    assert s3 == _oracle_triad_sum(g)
+    assert p == _oracle_pair_sum(g, states)
+    assert energy_from_sums(s3, p, n, 1.0) == exact_structural_energy(g)
+    assert energy_from_sums(s3, p, n, 0.0) == spreading_energy(g, states)
+    assert energy_from_sums(s3, p, n, alpha) == pytest.approx(
+        total_energy(g, states, alpha), abs=TOL
+    )
+    assert energy_from_sums(s3, p, n, alpha, exact=True) == (
+        Fraction(alpha) * _oracle_structural(g)
+        + (1 - Fraction(alpha)) * _oracle_spreading(g, states)
+    )
+
+
+def test_energy_from_sums_small_n_and_validation() -> None:
+    assert energy_from_sums(5, 7, 1, 0.5) == 0.0
+    assert energy_from_sums(5, 1, 2, 0.5) == 0.5
+    assert energy_from_sums(0, 0, 2, 0.5, exact=True) == Fraction(0)
+    with pytest.raises(TypeError, match="s3 must be an int"):
+        energy_from_sums(1.0, 0, 3, 0.5)
+    with pytest.raises(TypeError, match="p must be an int"):
+        energy_from_sums(0, True, 3, 0.5)
+    with pytest.raises(ValueError, match="n must be >= 1"):
+        energy_from_sums(0, 0, 0, 0.5)
+    with pytest.raises(ValueError, match="alpha"):
+        energy_from_sums(0, 0, 3, 1.5)
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_flip_numerators_equal_change_in_sums(seed: int) -> None:
+    g, states, (u, v), alpha = _random_case(seed)
+    h = _flipped(g, u, v)
+    d_s3, d_p = flip_energy_numerators(g, states, u, v)
+    assert d_s3 == structural_triad_sum(h) - structural_triad_sum(g)
+    assert d_p == spreading_pair_sum(h, states) - spreading_pair_sum(g, states)
+    n = g.number_of_nodes()
+    assert energy_from_sums(d_s3, d_p, n, alpha, exact=True) == delta_total_energy(
+        g, states, u, v, alpha, exact=True
+    )
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_state_change_pair_delta_equals_change_in_sum(seed: int) -> None:
+    g, states, _, _ = _random_case(seed)
+    rng = np.random.default_rng(seed)
+    v = int(rng.integers(g.number_of_nodes()))
+    for new_state in (1, 0, -1):
+        after = states.copy()
+        after[v] = new_state
+        expected = spreading_pair_sum(g, after) - spreading_pair_sum(g, states)
+        assert state_change_pair_delta(g, states, v, new_state) == expected
+
+
+def test_state_change_pair_delta_hand_computed() -> None:
+    g = _graph(4, [(0, 1, 1), (0, 2, -1), (0, 3, 1)])
+    # Node 0 becomes infected; neighbours S, I, A over signs +, -, +.
+    # Before: only (0, 2) is active (S-I over -1): P = -1.
+    # After: (0, 1) +1 and (0, 3) +1 become active, (0, 2) I-I goes inactive.
+    assert state_change_pair_delta(g, _st("SSIA"), 0, -1) == 3
+    assert state_change_pair_delta(g, _st("SSIA"), 0, 0) == 0
+
+
+@pytest.mark.parametrize(
+    ("args", "error"),
+    [
+        ((5, 1), ValueError),
+        ((-1, 1), ValueError),
+        ((True, 1), TypeError),
+        ((0, 2), ValueError),
+        ((0, 1.0), TypeError),
+        ((0, False), TypeError),
+    ],
+)
+def test_state_change_pair_delta_rejects_bad_input(
+    args: tuple[object, object], error: type
+) -> None:
+    with pytest.raises(error):
+        state_change_pair_delta(_graph(3, [(0, 1, 1)]), _st("SIA"), *args)

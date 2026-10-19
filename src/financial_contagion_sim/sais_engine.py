@@ -66,6 +66,7 @@ TARGETS = (State.SUSCEPTIBLE, State.ALERT, State.INFECTED)
 
 _S, _A, _I = int(State.SUSCEPTIBLE), int(State.ALERT), int(State.INFECTED)
 _TO_S, _TO_A, _TO_I = 0, 1, 2
+_ALLOWED_TRANSITIONS = frozenset({(_S, _I), (_A, _I), (_S, _A), (_I, _S)})
 
 StateArray = npt.NDArray[np.int8]
 CountArray = npt.NDArray[np.int64]
@@ -478,6 +479,57 @@ def run_gillespie(
     return SAISResult(
         current, time, n_events, reason, None if events is None else tuple(events)
     )
+
+
+def apply_sais_event(
+    g: "nx.Graph[int]",
+    states: StateArray,
+    n_pos: CountArray,
+    node: int,
+    new_state: int,
+) -> State:
+    """Apply one SAIS jump in place and update ``n_pos`` around ``node``.
+
+    This is the update :func:`gillespie_step` performs after choosing an
+    event, exposed for callers that run their own clock (the co-evolution
+    simulator). Only the four spec §3.1 transitions are allowed. Cost
+    O(deg(node)); the graph itself is not validated.
+
+    Args:
+        g: Signed graph satisfying the Phase 1 contract.
+        states: State array, updated in place.
+        n_pos: ``N_i`` array consistent with ``g`` and ``states``, updated in
+            place.
+        node: The node that changes state.
+        new_state: Its new state; ``(old, new)`` must be S->I, A->I, S->A or
+            I->S.
+
+    Returns:
+        The node's previous state.
+
+    Raises:
+        TypeError: an argument has the wrong type.
+        ValueError: an argument is invalid or the transition is not allowed.
+    """
+    n = g.number_of_nodes()
+    for name, array, dtype in (("states", states, np.int8), ("n_pos", n_pos, np.int64)):
+        if not isinstance(array, np.ndarray) or array.dtype != dtype:
+            raise TypeError(f"{name} must be a numpy.ndarray of dtype {dtype.__name__}")
+        if array.shape != (n,):
+            raise ValueError(f"{name} must have shape ({n},), got {array.shape}")
+    _check_int("node", node, minimum=0)
+    if node >= n:
+        raise ValueError(f"node must be < n={n}, got {node}")
+    if not isinstance(new_state, int) or isinstance(new_state, bool):
+        raise TypeError(f"new_state must be an int, got {new_state!r}")
+    old_state = int(states[node])
+    if (old_state, int(new_state)) not in _ALLOWED_TRANSITIONS:
+        raise ValueError(
+            f"transition {old_state} -> {int(new_state)} is not one of the four "
+            "SAIS transitions (S->I, A->I, S->A, I->S)"
+        )
+    _apply_event(g, states, n_pos, node, State(int(new_state)))
+    return State(old_state)
 
 
 def _sample_waiting_time(total_rate: float, rng: np.random.Generator) -> float:

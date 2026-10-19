@@ -16,6 +16,7 @@ from financial_contagion_sim.sais_engine import (
     SAISParams,
     State,
     _select_event,
+    apply_sais_event,
     compute_rates,
     gillespie_step,
     infected_positive_neighbors,
@@ -594,3 +595,53 @@ def test_isolated_recovery_time_has_mean_one_over_delta() -> None:
         times.append(step.time)
     mean = 1 / params.delta
     assert abs(float(np.mean(times)) - mean) <= 5 * mean / math.sqrt(trials)
+
+
+# --- apply_sais_event (Phase 3 amendment) ------------------------------------------
+
+
+def test_apply_sais_event_matches_recomputation() -> None:
+    g = generate_erdos_renyi(30, 0.2, 0.6, rng=41)
+    states = make_initial_state(30, 0.3, rng=41).states
+    n_pos = infected_positive_neighbors(g, states)
+    rng = np.random.default_rng(41)
+    for _ in range(300):
+        rates = compute_rates(states, n_pos, PARAMS)
+        node, target = select_event(rates, rng)
+        before = int(states[node])
+        assert apply_sais_event(g, states, n_pos, node, target) == before
+        assert states[node] == target
+        assert np.array_equal(n_pos, infected_positive_neighbors(g, states))
+
+
+@pytest.mark.parametrize(
+    ("code", "node", "new_state"),
+    [("SIA", 0, 1), ("SIA", 2, 1), ("SIA", 1, 0), ("SIA", 1, -1), ("SIA", 2, 0)],
+    ids=["S->S", "A->S", "I->A", "I->I", "A->A"],
+)
+def test_apply_sais_event_rejects_disallowed_transitions(
+    code: str, node: int, new_state: int
+) -> None:
+    g = _graph(3, [(0, 1, 1), (1, 2, 1)])
+    states = _st(code)
+    with pytest.raises(ValueError, match="not one of the four"):
+        apply_sais_event(
+            g, states, infected_positive_neighbors(g, states), node, new_state
+        )
+    assert states.tolist() == _st(code).tolist()
+
+
+def test_apply_sais_event_rejects_bad_input() -> None:
+    g = _graph(3, [(0, 1, 1)])
+    states = _st("SIA")
+    n_pos = infected_positive_neighbors(g, states)
+    with pytest.raises(ValueError, match="node must be < n"):
+        apply_sais_event(g, states, n_pos, 3, -1)
+    with pytest.raises(TypeError, match="node must be an int"):
+        apply_sais_event(g, states, n_pos, True, -1)
+    with pytest.raises(TypeError, match="new_state must be an int"):
+        apply_sais_event(g, states, n_pos, 0, -1.0)
+    with pytest.raises(TypeError, match="int64"):
+        apply_sais_event(g, states, n_pos.astype(np.int32), 0, -1)
+    with pytest.raises(ValueError, match="shape"):
+        apply_sais_event(g, states[:2], n_pos, 0, -1)
